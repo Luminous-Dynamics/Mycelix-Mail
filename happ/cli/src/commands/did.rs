@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::client::MycellixClient;
+use anyhow::{Context, Result};
 
 /// Register a new DID
 pub async fn handle_register(
@@ -72,8 +72,14 @@ pub async fn handle_resolve(client: &MycellixClient, did: String) -> Result<()> 
             println!();
             println!("🆔 DID:         {}", resolution.did);
             println!("🔑 Agent Key:   {}", resolution.agent_pub_key);
-            println!("📅 Created:     {}", format_timestamp(resolution.created_at));
-            println!("🔄 Updated:     {}", format_timestamp(resolution.updated_at));
+            println!(
+                "📅 Created:     {}",
+                format_timestamp(resolution.created_at)
+            );
+            println!(
+                "🔄 Updated:     {}",
+                format_timestamp(resolution.updated_at)
+            );
             println!();
 
             let age = format_age(resolution.created_at);
@@ -104,10 +110,7 @@ pub async fn handle_list(client: &MycellixClient, filter: Option<String>) -> Res
     // Fetch all DIDs
     println!("📡 Querying DID registry...");
 
-    let mut dids = client
-        .list_dids()
-        .await
-        .context("Failed to list DIDs")?;
+    let mut dids = client.list_dids().await.context("Failed to list DIDs")?;
 
     // Apply filter if specified
     if let Some(ref pattern) = filter {
@@ -136,9 +139,7 @@ pub async fn handle_list(client: &MycellixClient, filter: Option<String>) -> Res
     println!();
 
     // Table header
-    println!("{:<40} {:<30} {:<12}",
-        "DID", "Agent Key", "Registered"
-    );
+    println!("{:<40} {:<30} {:<12}", "DID", "Agent Key", "Registered");
     println!("{}", "─".repeat(82));
 
     // Table rows
@@ -147,9 +148,7 @@ pub async fn handle_list(client: &MycellixClient, filter: Option<String>) -> Res
         let key_short = truncate_key(&did_resolution.agent_pub_key);
         let age = format_relative_time(did_resolution.created_at);
 
-        println!("{:<40} {:<30} {:<12}",
-            did_short, key_short, age
-        );
+        println!("{:<40} {:<30} {:<12}", did_short, key_short, age);
     }
 
     println!();
@@ -221,16 +220,14 @@ pub async fn handle_whoami(client: &MycellixClient) -> Result<()> {
 /// Format timestamp as human-readable string
 fn format_timestamp(ts: i64) -> String {
     use chrono::{DateTime, Utc};
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 /// Format timestamp as relative time (e.g., "2d ago")
 fn format_relative_time(ts: i64) -> String {
     use chrono::{DateTime, Utc};
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     let now = Utc::now();
     let duration = now.signed_duration_since(dt);
 
@@ -250,8 +247,7 @@ fn format_relative_time(ts: i64) -> String {
 /// Format age (e.g., "2 days ago")
 fn format_age(ts: i64) -> String {
     use chrono::{DateTime, Utc};
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     let now = Utc::now();
     let duration = now.signed_duration_since(dt);
 
@@ -300,7 +296,7 @@ fn truncate_key(key: &str) -> String {
     if key.len() <= 28 {
         key.to_string()
     } else {
-        format!("{}...{}", &key[..12], &key[key.len()-12..])
+        format!("{}...{}", &key[..12], &key[key.len() - 12..])
     }
 }
 

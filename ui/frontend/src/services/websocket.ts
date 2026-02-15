@@ -26,7 +26,8 @@ class WebSocketService {
     }
 
     this.isIntentionallyClosed = false;
-    const url = `${config.wsUrl}/ws?token=${encodeURIComponent(token)}`;
+    // Connect to Rust backend WebSocket endpoint
+    const url = `${config.wsUrl}/ws/events?token=${encodeURIComponent(token)}`;
 
     try {
       this.ws = new WebSocket(url);

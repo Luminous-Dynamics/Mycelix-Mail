@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod client;
 mod commands;
 mod config;
-mod client;
 mod types;
 
 use commands::*;
@@ -18,11 +18,20 @@ use commands::*;
 #[command(propagate_version = true)]
 struct Cli {
     /// Holochain conductor URL
-    #[arg(short, long, env = "HOLOCHAIN_URL", default_value = "ws://localhost:8888")]
+    #[arg(
+        short,
+        long,
+        env = "HOLOCHAIN_URL",
+        default_value = "ws://localhost:8888"
+    )]
     conductor: String,
 
     /// DID registry URL
-    #[arg(long, env = "DID_REGISTRY_URL", default_value = "http://localhost:5000")]
+    #[arg(
+        long,
+        env = "DID_REGISTRY_URL",
+        default_value = "http://localhost:5000"
+    )]
     did_registry: String,
 
     /// MATL bridge URL
@@ -239,9 +248,7 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     let log_level = if cli.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     // Handle Init command early (before loading config or creating client)
     if let Commands::Init { email, import_keys } = &cli.command {
@@ -251,19 +258,17 @@ async fn main() -> Result<()> {
             &cli.conductor,
             &cli.did_registry,
             &cli.matl_bridge,
-        ).await;
+        )
+        .await;
     }
 
     // Load configuration (required for all other commands)
     let config = config::Config::load_or_create()?;
 
     // Create client
-    let client = client::MycellixClient::new(
-        &cli.conductor,
-        &cli.did_registry,
-        &cli.matl_bridge,
-        config,
-    ).await?;
+    let client =
+        client::MycellixClient::new(&cli.conductor, &cli.did_registry, &cli.matl_bridge, config)
+            .await?;
 
     // Execute command
     match cli.command {
@@ -272,57 +277,78 @@ async fn main() -> Result<()> {
             unreachable!()
         }
 
-        Commands::Send { to, subject, body, attach, reply_to, tier } => {
+        Commands::Send {
+            to,
+            subject,
+            body,
+            attach,
+            reply_to,
+            tier,
+        } => {
             send::handle_send(&client, to, subject, body, attach, reply_to, tier).await?;
         }
 
-        Commands::Inbox { from, trust_min, unread, limit, format } => {
+        Commands::Inbox {
+            from,
+            trust_min,
+            unread,
+            limit,
+            format,
+        } => {
             inbox::handle_inbox(&client, from, trust_min, unread, limit, &format).await?;
         }
 
-        Commands::Read { message_id, mark_read } => {
+        Commands::Read {
+            message_id,
+            mark_read,
+        } => {
             read::handle_read(&client, message_id, mark_read).await?;
         }
 
-        Commands::Trust { command } => {
-            match command {
-                TrustCommands::Get { did } => {
-                    trust::handle_get(&client, did).await?;
-                }
-                TrustCommands::Set { did, score } => {
-                    trust::handle_set(&client, did, score).await?;
-                }
-                TrustCommands::List { min, sort } => {
-                    trust::handle_list(&client, min, sort).await?;
-                }
-                TrustCommands::Sync { did } => {
-                    trust::handle_sync(&client, did).await?;
-                }
+        Commands::Trust { command } => match command {
+            TrustCommands::Get { did } => {
+                trust::handle_get(&client, did).await?;
             }
-        }
-
-        Commands::Did { command } => {
-            match command {
-                DidCommands::Register { did, agent_key } => {
-                    did::handle_register(&client, did, agent_key).await?;
-                }
-                DidCommands::Resolve { did } => {
-                    did::handle_resolve(&client, did).await?;
-                }
-                DidCommands::List { filter } => {
-                    did::handle_list(&client, filter).await?;
-                }
-                DidCommands::Whoami => {
-                    did::handle_whoami(&client).await?;
-                }
+            TrustCommands::Set { did, score } => {
+                trust::handle_set(&client, did, score).await?;
             }
-        }
+            TrustCommands::List { min, sort } => {
+                trust::handle_list(&client, min, sort).await?;
+            }
+            TrustCommands::Sync { did } => {
+                trust::handle_sync(&client, did).await?;
+            }
+        },
 
-        Commands::Search { query, in_field, limit, format } => {
+        Commands::Did { command } => match command {
+            DidCommands::Register { did, agent_key } => {
+                did::handle_register(&client, did, agent_key).await?;
+            }
+            DidCommands::Resolve { did } => {
+                did::handle_resolve(&client, did).await?;
+            }
+            DidCommands::List { filter } => {
+                did::handle_list(&client, filter).await?;
+            }
+            DidCommands::Whoami => {
+                did::handle_whoami(&client).await?;
+            }
+        },
+
+        Commands::Search {
+            query,
+            in_field,
+            limit,
+            format,
+        } => {
             search::handle_search(&client, query, &in_field, limit, &format).await?;
         }
 
-        Commands::Export { format, output, since } => {
+        Commands::Export {
+            format,
+            output,
+            since,
+        } => {
             export::handle_export(&client, &format, output, since).await?;
         }
 

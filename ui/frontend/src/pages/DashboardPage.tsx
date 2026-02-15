@@ -20,6 +20,7 @@ import SmartFolderView from '@/components/SmartFolderView';
 import LabelPicker from '@/components/LabelPicker';
 import { useKeyboardShortcuts, EMAIL_SHORTCUTS } from '@/hooks/useKeyboardShortcuts';
 import type { Email, Folder } from '@/types';
+import TrustProviderAlert from '@/components/TrustProviderAlert';
 
 type ComposeMode = 'new' | 'reply' | 'replyAll' | 'forward';
 
@@ -598,6 +599,9 @@ export default function DashboardPage() {
         <div className={layoutConfig.containerClass}>
           {/* Email List */}
           <div className={`bg-white dark:bg-gray-800 ${layoutConfig.listClass}`}>
+            <div className="px-4 pt-3">
+              <TrustProviderAlert />
+            </div>
             {isSnoozedFolder ? (
               <SnoozedFolderView
                 onSelectEmail={setSelectedEmailId}

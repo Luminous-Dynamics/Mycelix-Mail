@@ -61,6 +61,14 @@ export interface Email {
     type: string;
   };
   attachments?: Attachment[];
+  // Trust & safety metadata (optional; supplied by Holochain/MATL layer or heuristics)
+  trustScore?: number;
+  trustTier?: 'high' | 'medium' | 'low' | 'unknown';
+  trustReasons?: string[];
+  trustPathLength?: number;
+  trustDecayAt?: string;
+  isQuarantined?: boolean;
+  quarantineReason?: string;
   createdAt: string;
   updatedAt: string;
 }

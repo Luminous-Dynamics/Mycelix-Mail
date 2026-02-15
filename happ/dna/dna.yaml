@@ -1,19 +1,23 @@
 ---
-manifest_version: "1"
+# Mycelix Mail DNA (simplified)
+# Core email messaging with trust filtering
+
+manifest_version: "0"
 name: mycelix_mail
 integrity:
-  network_seed: mycelix-mail-network-v1
+  network_seed: ~
   properties: ~
   zomes:
     - name: mycelix_mail_integrity
-      bundled: integrity.wasm
+      path: integrity.wasm
+
 coordinator:
   zomes:
     - name: mail_messages
-      bundled: mail_messages.wasm
+      path: mail_messages.wasm
       dependencies:
         - name: mycelix_mail_integrity
     - name: trust_filter
-      bundled: trust_filter.wasm
+      path: trust_filter.wasm
       dependencies:
         - name: mycelix_mail_integrity

@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { EmailThread } from '@/utils/threading';
 import { formatParticipants } from '@/utils/threading';
 import LabelChip from './LabelChip';
 import { useLabelStore } from '@/store/labelStore';
+import { useTrustStore } from '@/store/trustStore';
+import TrustBadge from './TrustBadge';
+import { toast } from '@/store/toastStore';
 
 interface ThreadViewProps {
   thread: EmailThread;
@@ -19,6 +22,7 @@ export default function ThreadView({
 }: ThreadViewProps) {
   const [expanded, setExpanded] = useState(isExpanded);
   const { getLabelsForEmail } = useLabelStore();
+  const { evaluateTrust, shouldQuarantine, setOverride } = useTrustStore();
 
   // Get the latest email (shown when collapsed)
   const latestEmail = thread.emails[thread.emails.length - 1];
@@ -36,6 +40,30 @@ export default function ThreadView({
       return email ? getLabelsForEmail(email.id).find((l) => l.id === labelId) : null;
     })
     .filter((label): label is NonNullable<typeof label> => label !== null);
+
+  const trustSummary = useMemo(() => {
+    // Use the lowest trust tier among emails in the thread for a conservative summary
+    const summaries = thread.emails.map((email) => evaluateTrust(email));
+    const hasQuarantine = thread.emails.some((email) => shouldQuarantine(email));
+
+    const tierOrder: Record<string, number> = { high: 3, medium: 2, low: 1, unknown: 0 };
+    const worst = summaries.reduce(
+      (acc, curr) => (tierOrder[curr.tier] < tierOrder[acc.tier] ? curr : acc),
+      summaries[0]
+    );
+
+    const attestationCount = summaries.reduce((count, s) => count + (s.attestations?.length || 0), 0);
+    const latestAttestation = summaries
+      .map((s) => s.attestations?.[0])
+      .find((att) => Boolean(att));
+
+    return { worst, hasQuarantine, attestationCount, latestAttestation };
+  }, [thread.emails, evaluateTrust, shouldQuarantine]);
+
+  const threadSenders = useMemo(
+    () => Array.from(new Set(thread.emails.map((email) => email.from.address).filter(Boolean))),
+    [thread.emails]
+  );
 
   const handleThreadClick = (e: React.MouseEvent) => {
     // If clicking on the thread header, toggle expansion
@@ -87,6 +115,52 @@ export default function ThreadView({
             <span className={`text-sm flex-1 truncate ${!latestEmail.isRead ? 'font-bold' : ''} text-gray-900 dark:text-gray-100`}>
               {formatParticipants(thread.participants, 2)}
             </span>
+            {trustSummary && (
+              <TrustBadge summary={trustSummary.worst} compact />
+            )}
+            {trustSummary.hasQuarantine && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-200">
+                Quarantined mail
+              </span>
+            )}
+            {trustSummary.attestationCount > 0 && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200">
+                {trustSummary.attestationCount} attestation{trustSummary.attestationCount === 1 ? '' : 's'}
+              </span>
+            )}
+            {trustSummary.latestAttestation?.from && (
+              <span className="text-[11px] text-gray-600 dark:text-gray-300">
+                Latest attester: {trustSummary.latestAttestation.from}
+              </span>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toast.success('Attestation request sent for thread participants.');
+              }}
+              className="text-[11px] px-2 py-0.5 rounded-md border border-blue-400 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-200 hover:border-blue-500 dark:hover:border-blue-600"
+            >
+              Request attestation
+            </button>
+            {trustSummary.hasQuarantine && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  threadSenders.forEach((sender) => {
+                    setOverride(sender, {
+                      score: 95,
+                      tier: 'high',
+                      reasons: ['Manually trusted thread sender'],
+                      quarantined: false,
+                    });
+                  });
+                  toast.success('Thread senders promoted to primary (manual allowlist).');
+                }}
+                className="text-[11px] px-2 py-0.5 rounded-md border border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-200 hover:border-emerald-500 dark:hover:border-emerald-600"
+              >
+                Promote senders
+              </button>
+            )}
           </div>
 
           {/* Metadata */}

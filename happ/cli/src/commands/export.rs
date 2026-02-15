@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::fs::File;
 use std::io::Write;
@@ -50,9 +50,15 @@ pub async fn handle_export(
         let before_count = all_messages.len();
         all_messages.retain(|msg| msg.timestamp >= filter_timestamp);
         let after_count = all_messages.len();
-        println!("🔍 Filtered to {} message(s) since {}", after_count, since_date);
+        println!(
+            "🔍 Filtered to {} message(s) since {}",
+            after_count, since_date
+        );
         if before_count > after_count {
-            println!("   (Excluded {} older message(s))", before_count - after_count);
+            println!(
+                "   (Excluded {} older message(s))",
+                before_count - after_count
+            );
         }
     }
 
@@ -68,7 +74,11 @@ pub async fn handle_export(
     }
 
     println!();
-    println!("💾 Writing {} message(s) to {}...", all_messages.len(), output);
+    println!(
+        "💾 Writing {} message(s) to {}...",
+        all_messages.len(),
+        output
+    );
 
     // 4. Export to file
     match format {
@@ -94,11 +104,11 @@ pub async fn handle_export(
 
 /// Export messages to JSON format
 fn export_json(messages: &[MailMessage], output: &str) -> Result<()> {
-    let json = serde_json::to_string_pretty(messages)
-        .context("Failed to serialize messages to JSON")?;
+    let json =
+        serde_json::to_string_pretty(messages).context("Failed to serialize messages to JSON")?;
 
-    let mut file = File::create(output)
-        .context(format!("Failed to create output file: {}", output))?;
+    let mut file =
+        File::create(output).context(format!("Failed to create output file: {}", output))?;
 
     file.write_all(json.as_bytes())
         .context("Failed to write JSON data")?;
@@ -108,12 +118,13 @@ fn export_json(messages: &[MailMessage], output: &str) -> Result<()> {
 
 /// Export messages to MBOX format (standard Unix mailbox format)
 fn export_mbox(messages: &[MailMessage], output: &str) -> Result<()> {
-    let mut file = File::create(output)
-        .context(format!("Failed to create output file: {}", output))?;
+    let mut file =
+        File::create(output).context(format!("Failed to create output file: {}", output))?;
 
     for msg in messages {
         // MBOX format starts each message with "From " line
-        let from_line = format!("From {} {}\n",
+        let from_line = format!(
+            "From {} {}\n",
             msg.from_did,
             format_timestamp_mbox(msg.timestamp)
         );
@@ -142,8 +153,8 @@ fn export_mbox(messages: &[MailMessage], output: &str) -> Result<()> {
 
 /// Export messages to CSV format
 fn export_csv(messages: &[MailMessage], output: &str) -> Result<()> {
-    let mut file = File::create(output)
-        .context(format!("Failed to create output file: {}", output))?;
+    let mut file =
+        File::create(output).context(format!("Failed to create output file: {}", output))?;
 
     // CSV header
     let header = "Timestamp,Date,From,To,Subject,BodyCID,Tier,ThreadID\n";
@@ -175,31 +186,99 @@ fn export_csv(messages: &[MailMessage], output: &str) -> Result<()> {
 }
 
 /// Parse date string to Unix timestamp
+///
+/// Supports multiple date formats:
+/// - Unix timestamp (e.g., "1609459200")
+/// - ISO 8601 / RFC 3339 (e.g., "2021-01-01T00:00:00Z")
+/// - Date only (e.g., "2021-01-01")
+/// - Date with time (e.g., "2021-01-01 12:30:00")
+/// - Relative formats (e.g., "today", "yesterday", "7d", "1w", "1m")
 fn parse_date(date_str: &str) -> Result<i64> {
-    // TODO: Implement proper date parsing
-    // For now, just parse as Unix timestamp
-    date_str.parse::<i64>()
-        .context(format!("Failed to parse date: {}. Please provide Unix timestamp for now.", date_str))
+    let date_str = date_str.trim();
+
+    // Try parsing as Unix timestamp first
+    if let Ok(ts) = date_str.parse::<i64>() {
+        return Ok(ts);
+    }
+
+    // Handle relative date formats
+    let now = Utc::now();
+    match date_str.to_lowercase().as_str() {
+        "today" => {
+            let today = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+            return Ok(DateTime::<Utc>::from_naive_utc_and_offset(today, Utc).timestamp());
+        }
+        "yesterday" => {
+            let yesterday = (now - chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
+            return Ok(DateTime::<Utc>::from_naive_utc_and_offset(yesterday, Utc).timestamp());
+        }
+        _ => {}
+    }
+
+    // Handle relative duration formats (e.g., "7d", "1w", "1m", "2h")
+    if date_str.len() >= 2 {
+        let (num_str, unit) = date_str.split_at(date_str.len() - 1);
+        if let Ok(num) = num_str.parse::<i64>() {
+            let duration = match unit.to_lowercase().as_str() {
+                "h" => Some(chrono::Duration::hours(num)),
+                "d" => Some(chrono::Duration::days(num)),
+                "w" => Some(chrono::Duration::weeks(num)),
+                "m" => Some(chrono::Duration::days(num * 30)), // Approximate month
+                _ => None,
+            };
+            if let Some(dur) = duration {
+                return Ok((now - dur).timestamp());
+            }
+        }
+    }
+
+    // Try parsing as RFC 3339 / ISO 8601 with timezone
+    if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
+        return Ok(dt.with_timezone(&Utc).timestamp());
+    }
+
+    // Try parsing as ISO 8601 date-time without timezone (assume UTC)
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S") {
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).timestamp());
+    }
+
+    // Try parsing as date with space-separated time
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).timestamp());
+    }
+
+    // Try parsing as date only (start of day)
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        let dt = date.and_hms_opt(0, 0, 0).unwrap();
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).timestamp());
+    }
+
+    bail!(
+        "Failed to parse date: '{}'. Supported formats:\n  \
+        - Unix timestamp (e.g., 1609459200)\n  \
+        - ISO 8601 (e.g., 2021-01-01T00:00:00Z)\n  \
+        - Date only (e.g., 2021-01-01)\n  \
+        - Date with time (e.g., 2021-01-01 12:30:00)\n  \
+        - Relative (e.g., today, yesterday, 7d, 1w, 1m)",
+        date_str
+    )
 }
 
 /// Format timestamp for MBOX "From " line
 fn format_timestamp_mbox(ts: i64) -> String {
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     dt.format("%a %b %d %H:%M:%S %Y").to_string()
 }
 
 /// Format timestamp as RFC 2822 (for email headers)
 fn format_timestamp_rfc2822(ts: i64) -> String {
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     dt.to_rfc2822()
 }
 
 /// Format timestamp as ISO 8601 (for CSV)
 fn format_timestamp_iso8601(ts: i64) -> String {
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     dt.to_rfc3339()
 }
 
@@ -283,14 +362,67 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_date() {
-        // Test with Unix timestamp
+    fn test_parse_date_unix_timestamp() {
         let result = parse_date("1609459200");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1609459200);
+    }
 
-        // Test with invalid format
+    #[test]
+    fn test_parse_date_iso8601() {
+        // ISO 8601 with timezone
+        let result = parse_date("2021-01-01T00:00:00Z");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1609459200);
+
+        // ISO 8601 without timezone (assume UTC)
+        let result = parse_date("2021-01-01T12:30:00");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1609504200);
+    }
+
+    #[test]
+    fn test_parse_date_date_only() {
+        let result = parse_date("2021-01-01");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1609459200);
+    }
+
+    #[test]
+    fn test_parse_date_with_time() {
+        let result = parse_date("2021-01-01 12:30:00");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1609504200);
+    }
+
+    #[test]
+    fn test_parse_date_relative() {
+        // These tests verify parsing works, but exact values depend on current time
+        let result = parse_date("today");
+        assert!(result.is_ok());
+
+        let result = parse_date("yesterday");
+        assert!(result.is_ok());
+
+        let result = parse_date("7d");
+        assert!(result.is_ok());
+
+        let result = parse_date("1w");
+        assert!(result.is_ok());
+
+        let result = parse_date("1m");
+        assert!(result.is_ok());
+
+        let result = parse_date("24h");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_date_invalid() {
         let result = parse_date("invalid");
+        assert!(result.is_err());
+
+        let result = parse_date("not-a-date");
         assert!(result.is_err());
     }
 }

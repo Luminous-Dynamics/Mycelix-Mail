@@ -48,8 +48,25 @@ pub async fn handle_inbox(
         println!();
     }
 
-    // 2. Apply filters
-    messages = apply_filters(messages, from, trust_min, unread);
+    // 2. Build trust score cache for filtering
+    let mut trust_scores = std::collections::HashMap::new();
+    if trust_min.is_some() {
+        // Collect unique sender DIDs
+        let sender_dids: std::collections::HashSet<_> = messages.iter().map(|m| m.from_did.clone()).collect();
+
+        // Fetch trust scores for each sender
+        for did in sender_dids {
+            if let Ok(Some(score)) = client.get_trust_score(did.clone()).await {
+                trust_scores.insert(did, score.score);
+            }
+        }
+    }
+
+    // 3. Load read status from local storage
+    let read_messages = load_read_messages();
+
+    // 4. Apply filters
+    messages = apply_filters(messages, from, trust_min, unread, &trust_scores, &read_messages);
 
     // 3. Sort by timestamp (newest first)
     messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -62,7 +79,9 @@ pub async fn handle_inbox(
     if messages.is_empty() {
         if filter_count > 0 {
             println!("No messages match your filters.");
-            println!("Try removing some filters or check 'mycelix-mail inbox' to see all messages.");
+            println!(
+                "Try removing some filters or check 'mycelix-mail inbox' to see all messages."
+            );
         } else {
             println!("Your inbox is empty.");
             println!();
@@ -91,20 +110,63 @@ pub async fn handle_inbox(
     if messages.len() < total_count {
         println!(
             "💡 Showing first {} messages. Use --limit {} to see more.",
-            limit,
-            total_count
+            limit, total_count
         );
     }
 
     Ok(())
 }
 
+/// Get the path for storing read message status
+fn get_read_messages_path() -> std::path::PathBuf {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("mycelix-mail");
+    std::fs::create_dir_all(&config_dir).ok();
+    config_dir.join("read_messages.json")
+}
+
+/// Load read message IDs from local storage
+fn load_read_messages() -> std::collections::HashSet<String> {
+    let path = get_read_messages_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    }
+}
+
+/// Save read message IDs to local storage
+fn save_read_messages(read_messages: &std::collections::HashSet<String>) -> Result<()> {
+    let path = get_read_messages_path();
+    let content = serde_json::to_string_pretty(read_messages)
+        .context("Failed to serialize read messages")?;
+    std::fs::write(&path, content).context("Failed to write read messages file")?;
+    Ok(())
+}
+
+/// Mark a message as read
+///
+/// Adds the message ID to the read messages set and persists to disk.
+pub fn mark_message_as_read(msg: &MailMessage) -> Result<()> {
+    let msg_id = format!("{}:{}:{}", msg.from_did, msg.timestamp, msg.body_cid);
+    let mut read_messages = load_read_messages();
+    read_messages.insert(msg_id);
+    save_read_messages(&read_messages)
+}
+
 /// Apply filters to message list
+///
+/// Filters messages by sender, trust score, and read status.
+/// Trust scores are looked up from the provided cache map.
+/// Read status is tracked via the read_messages set.
 fn apply_filters(
     messages: Vec<MailMessage>,
     from: Option<String>,
     trust_min: Option<f64>,
     unread: bool,
+    trust_scores: &std::collections::HashMap<String, f64>,
+    read_messages: &std::collections::HashSet<String>,
 ) -> Vec<MailMessage> {
     messages
         .into_iter()
@@ -117,16 +179,20 @@ fn apply_filters(
             }
 
             // Filter by trust score
-            // TODO: Implement trust score lookup
-            // For now, we skip trust filtering since we don't have trust data
-            if trust_min.is_some() {
-                // Would check: client.get_trust_score(&msg.from_did).score >= trust_min
+            if let Some(min_trust) = trust_min {
+                let sender_trust = trust_scores.get(&msg.from_did).copied().unwrap_or(0.0);
+                if sender_trust < min_trust {
+                    return false;
+                }
             }
 
             // Filter by unread status
             if unread {
-                // TODO: Implement read status tracking
-                // For now, all messages are considered unread
+                // Generate a unique message identifier for read status tracking
+                let msg_id = format!("{}:{}:{}", msg.from_did, msg.timestamp, msg.body_cid);
+                if read_messages.contains(&msg_id) {
+                    return false;
+                }
             }
 
             true
@@ -136,7 +202,8 @@ fn apply_filters(
 
 /// Display messages in table format
 fn display_table(messages: &[MailMessage]) {
-    println!("{:<6} {:<40} {:<20} {:<20} {:<6}",
+    println!(
+        "{:<6} {:<40} {:<20} {:<20} {:<6}",
         "ID", "From", "Subject", "Time", "Tier"
     );
     println!("{}", "─".repeat(95));
@@ -149,7 +216,8 @@ fn display_table(messages: &[MailMessage]) {
         let time_str = format_timestamp(msg.timestamp);
         let tier_short = format_tier_short(&msg.epistemic_tier);
 
-        println!("{:<6} {:<40} {:<20} {:<20} {:<6}",
+        println!(
+            "{:<6} {:<40} {:<20} {:<20} {:<6}",
             msg_id, from_short, subject_short, time_str, tier_short
         );
     }
@@ -160,8 +228,8 @@ fn display_table(messages: &[MailMessage]) {
 
 /// Display messages in JSON format
 fn display_json(messages: &[MailMessage]) -> Result<()> {
-    let json = serde_json::to_string_pretty(messages)
-        .context("Failed to serialize messages to JSON")?;
+    let json =
+        serde_json::to_string_pretty(messages).context("Failed to serialize messages to JSON")?;
     println!("{}", json);
     Ok(())
 }
@@ -172,9 +240,16 @@ fn display_raw(messages: &[MailMessage]) {
         println!("Message #{}", i + 1);
         println!("  From: {}", msg.from_did);
         println!("  To: {}", msg.to_did);
-        println!("  Subject (encrypted): {} bytes", msg.subject_encrypted.len());
+        println!(
+            "  Subject (encrypted): {} bytes",
+            msg.subject_encrypted.len()
+        );
         println!("  Body CID: {}", msg.body_cid);
-        println!("  Timestamp: {} ({})", msg.timestamp, format_timestamp(msg.timestamp));
+        println!(
+            "  Timestamp: {} ({})",
+            msg.timestamp,
+            format_timestamp(msg.timestamp)
+        );
         println!("  Tier: {:?}", msg.epistemic_tier);
         if let Some(ref thread) = msg.thread_id {
             println!("  Thread: {}", thread);
@@ -191,7 +266,11 @@ fn truncate_did(did: &str, max_len: usize) -> String {
         // Show prefix and suffix
         let prefix_len = max_len.saturating_sub(10);
         let suffix_len = 7;
-        format!("{}...{}", &did[..prefix_len], &did[did.len()-suffix_len..])
+        format!(
+            "{}...{}",
+            &did[..prefix_len],
+            &did[did.len() - suffix_len..]
+        )
     }
 }
 
@@ -206,8 +285,7 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 
 /// Format timestamp as relative time
 fn format_timestamp(ts: i64) -> String {
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
 
     let now = Utc::now();
     let diff = now.signed_duration_since(dt);
@@ -237,17 +315,24 @@ fn format_tier_short(tier: &crate::types::EpistemicTier) -> String {
     }
 }
 
-/// Decrypt subject (placeholder implementation)
+/// Decrypt subject line from encrypted bytes
 ///
-/// TODO: Implement real decryption
-/// - Fetch sender's public key
-/// - Decrypt using our private key
+/// This is a placeholder implementation that handles the current "ENC:" prefix format.
+/// Real NaCl box decryption requires:
+/// 1. Fetching the sender's public key from DID registry
+/// 2. Using our private key (from keyring) to decrypt via crypto_box_open
+/// 3. Handling nonce extraction from the encrypted payload
+///
+/// The encryption format should be: nonce (24 bytes) || ciphertext
+/// Decryption: crypto_box_open(ciphertext, nonce, sender_pubkey, our_privkey)
 fn decrypt_subject(encrypted: &[u8]) -> String {
-    // Placeholder: Just try to convert from bytes
-    // In real implementation, this would use NaCl decryption
+    // Current placeholder handles:
+    // 1. "ENC:" prefixed strings (our test/stub format)
+    // 2. Plain UTF-8 strings (for backwards compatibility)
+    // 3. Binary data returns "<encrypted>" indicator
 
     if let Ok(s) = String::from_utf8(encrypted.to_vec()) {
-        // If it's our fake "ENC:" prefix, strip it
+        // Strip our test "ENC:" prefix if present
         if s.starts_with("ENC:") {
             s[4..].to_string()
         } else {
@@ -282,8 +367,14 @@ mod tests {
     #[test]
     fn test_format_tier_short() {
         assert_eq!(format_tier_short(&EpistemicTier::Tier0Null), "T0");
-        assert_eq!(format_tier_short(&EpistemicTier::Tier2PrivatelyVerifiable), "T2");
-        assert_eq!(format_tier_short(&EpistemicTier::Tier4PubliclyReproducible), "T4");
+        assert_eq!(
+            format_tier_short(&EpistemicTier::Tier2PrivatelyVerifiable),
+            "T2"
+        );
+        assert_eq!(
+            format_tier_short(&EpistemicTier::Tier4PubliclyReproducible),
+            "T4"
+        );
     }
 
     #[test]
@@ -296,7 +387,9 @@ mod tests {
     #[test]
     fn test_apply_filters_empty() {
         let messages = vec![];
-        let filtered = apply_filters(messages, None, None, false);
+        let trust_scores = std::collections::HashMap::new();
+        let read_messages = std::collections::HashSet::new();
+        let filtered = apply_filters(messages, None, None, false, &trust_scores, &read_messages);
         assert_eq!(filtered.len(), 0);
     }
 
@@ -313,13 +406,70 @@ mod tests {
         };
 
         let messages = vec![msg.clone()];
+        let trust_scores = std::collections::HashMap::new();
+        let read_messages = std::collections::HashSet::new();
 
         // Should match
-        let filtered = apply_filters(messages.clone(), Some("ABC".to_string()), None, false);
+        let filtered = apply_filters(messages.clone(), Some("ABC".to_string()), None, false, &trust_scores, &read_messages);
         assert_eq!(filtered.len(), 1);
 
         // Should not match
-        let filtered = apply_filters(messages.clone(), Some("ZZZ".to_string()), None, false);
+        let filtered = apply_filters(messages.clone(), Some("ZZZ".to_string()), None, false, &trust_scores, &read_messages);
+        assert_eq!(filtered.len(), 0);
+    }
+
+    #[test]
+    fn test_apply_filters_by_trust_score() {
+        let msg = MailMessage {
+            from_did: "did:mycelix:ABC123".to_string(),
+            to_did: "did:mycelix:XYZ789".to_string(),
+            subject_encrypted: b"Test".to_vec(),
+            body_cid: "bafyrei123".to_string(),
+            timestamp: 1234567890,
+            thread_id: None,
+            epistemic_tier: EpistemicTier::Tier2PrivatelyVerifiable,
+        };
+
+        let messages = vec![msg.clone()];
+        let mut trust_scores = std::collections::HashMap::new();
+        trust_scores.insert("did:mycelix:ABC123".to_string(), 0.8);
+        let read_messages = std::collections::HashSet::new();
+
+        // Should match (trust 0.8 >= 0.5)
+        let filtered = apply_filters(messages.clone(), None, Some(0.5), false, &trust_scores, &read_messages);
+        assert_eq!(filtered.len(), 1);
+
+        // Should not match (trust 0.8 < 0.9)
+        let filtered = apply_filters(messages.clone(), None, Some(0.9), false, &trust_scores, &read_messages);
+        assert_eq!(filtered.len(), 0);
+    }
+
+    #[test]
+    fn test_apply_filters_by_read_status() {
+        let msg = MailMessage {
+            from_did: "did:mycelix:ABC123".to_string(),
+            to_did: "did:mycelix:XYZ789".to_string(),
+            subject_encrypted: b"Test".to_vec(),
+            body_cid: "bafyrei123".to_string(),
+            timestamp: 1234567890,
+            thread_id: None,
+            epistemic_tier: EpistemicTier::Tier2PrivatelyVerifiable,
+        };
+
+        let messages = vec![msg.clone()];
+        let trust_scores = std::collections::HashMap::new();
+        let mut read_messages = std::collections::HashSet::new();
+
+        // Should match (unread filter on, message not read)
+        let filtered = apply_filters(messages.clone(), None, None, true, &trust_scores, &read_messages);
+        assert_eq!(filtered.len(), 1);
+
+        // Mark as read
+        let msg_id = format!("{}:{}:{}", msg.from_did, msg.timestamp, msg.body_cid);
+        read_messages.insert(msg_id);
+
+        // Should not match (unread filter on, message is read)
+        let filtered = apply_filters(messages.clone(), None, None, true, &trust_scores, &read_messages);
         assert_eq!(filtered.len(), 0);
     }
 }

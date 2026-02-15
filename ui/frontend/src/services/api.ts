@@ -14,7 +14,7 @@ import { errorLogger } from './errorLogger';
 const API_URL = config.apiUrl;
 
 class ApiService {
-  private client: AxiosInstance;
+  public client: AxiosInstance;
 
   constructor() {
     this.client = axios.create({
@@ -228,6 +228,354 @@ class ApiService {
     );
     return data.data;
   }
+
+  // Trust / MATL endpoints (optional; no-op if backend does not expose)
+  async getTrustSummary(sender: string) {
+    const { data } = await this.client.get<
+      ApiResponse<{
+        summary: {
+          score?: number;
+          tier?: 'high' | 'medium' | 'low' | 'unknown';
+          reasons?: string[];
+          pathLength?: number;
+          decayAt?: string;
+          quarantined?: boolean;
+          attestations?: { from: string; to: string; weight: number; reason?: string }[];
+          fetchedAt?: string;
+        };
+      }>
+    >('/api/trust/summary', { params: { sender } });
+
+    return data.data.summary;
+  }
+
+  async getTrustHealth() {
+    const { data } = await this.client.get<
+      ApiResponse<{ providerConfigured: boolean; cacheSize: number; ttlMs: number }>
+    >('/api/trust/health');
+    return data.data;
+  }
+
+  // ============================================
+  // Claims API (0TML Integration)
+  // ============================================
+
+  async verifyClaims(claims: VerifiableClaim[], assuranceLevel?: AssuranceLevel) {
+    const { data } = await this.client.post<ApiResponse<VerifyClaimsResponse>>(
+      '/api/claims/verify',
+      { claims, assurance_level: assuranceLevel }
+    );
+    return data.data;
+  }
+
+  async listCredentials() {
+    const { data } = await this.client.get<ApiResponse<CredentialsListResponse>>(
+      '/api/claims/credentials'
+    );
+    return data.data;
+  }
+
+  async getCredential(id: string) {
+    const { data } = await this.client.get<ApiResponse<{ credential: VerifiableCredential }>>(
+      `/api/claims/credentials/${id}`
+    );
+    return data.data.credential;
+  }
+
+  async attachClaim(claim: VerifiableClaim, proofType: ProofType) {
+    const { data } = await this.client.post<ApiResponse<AttachClaimResponse>>(
+      '/api/claims/attach',
+      { claim, proof_type: proofType }
+    );
+    return data.data;
+  }
+
+  async getAssuranceLevel(did: string) {
+    const { data } = await this.client.get<ApiResponse<AssuranceLevelResponse>>(
+      `/api/claims/assurance/${did}`
+    );
+    return data.data;
+  }
+
+  // ============================================
+  // AI API (Symthaea Integration)
+  // ============================================
+
+  async analyzeEmail(email: Email) {
+    const { data } = await this.client.post<ApiResponse<AIInsights>>(
+      '/api/ai/analyze',
+      { email }
+    );
+    return data.data;
+  }
+
+  async summarizeThread(emails: Email[]) {
+    const { data } = await this.client.post<ApiResponse<ThreadSummary>>(
+      '/api/ai/summarize',
+      { emails }
+    );
+    return data.data;
+  }
+
+  async detectIntent(email: Email) {
+    const { data } = await this.client.post<ApiResponse<DetectIntentResponse>>(
+      '/api/ai/intent',
+      { email }
+    );
+    return data.data;
+  }
+
+  async suggestReplies(email: Email) {
+    const { data } = await this.client.post<ApiResponse<SuggestRepliesResponse>>(
+      '/api/ai/suggest-reply',
+      { email }
+    );
+    return data.data;
+  }
+
+  async explainTrust(senderDid: string, trustScore: number, trustPath: [string, string, number][]) {
+    const { data } = await this.client.post<ApiResponse<TrustExplanation>>(
+      '/api/ai/explain-trust',
+      { sender_did: senderDid, trust_score: trustScore, trust_path: trustPath }
+    );
+    return data.data;
+  }
+
+  async getAIStatus() {
+    const { data } = await this.client.get<ApiResponse<ConsciousnessState>>(
+      '/api/ai/status'
+    );
+    return data.data;
+  }
+
+  // ============================================
+  // Trust Graph API
+  // ============================================
+
+  async getTrustGraph(did: string, depth: number = 2) {
+    const { data } = await this.client.get<ApiResponse<TrustGraph>>(
+      `/api/trust-graph/graph/${did}`,
+      { params: { depth } }
+    );
+    return data.data;
+  }
+
+  async findTrustPath(fromDid: string, toDid: string) {
+    const { data } = await this.client.get<ApiResponse<TrustPath>>(
+      `/api/trust-graph/path/${fromDid}/${toDid}`
+    );
+    return data.data;
+  }
+
+  async createAttestation(request: CreateAttestationRequest) {
+    const { data } = await this.client.post<ApiResponse<CreateAttestationResponse>>(
+      '/api/trust-graph/attest',
+      request
+    );
+    return data.data;
+  }
+
+  async revokeAttestation(id: string) {
+    const { data } = await this.client.delete<ApiResponse<{ revoked: boolean; id: string }>>(
+      `/api/trust-graph/attest/${id}`
+    );
+    return data.data;
+  }
+
+  async getTrustedBy(did: string) {
+    const { data } = await this.client.get<ApiResponse<TrustEdgesResponse>>(
+      `/api/trust-graph/trusted-by/${did}`
+    );
+    return data.data;
+  }
+
+  async getTrusters(did: string) {
+    const { data } = await this.client.get<ApiResponse<TrustEdgesResponse>>(
+      `/api/trust-graph/trusters/${did}`
+    );
+    return data.data;
+  }
+}
+
+// ============================================
+// Type definitions for new APIs
+// ============================================
+
+// Claims types
+export type AssuranceLevel = 'e0_anonymous' | 'e1_verified_email' | 'e2_gitcoin_passport' | 'e3_multi_factor' | 'e4_constitutional';
+export type ProofType = 'risc0_zk_vm' | 'winterfell_air' | 'simplified_hash' | 'ed25519_signature' | 'none';
+export type CredentialType = 'verified_human' | 'gitcoin_passport' | 'reputation_score' | 'employment' | 'education' | 'certification' | 'membership' | 'attestation';
+
+export interface VerifiableCredential {
+  id: string;
+  credential_type: CredentialType;
+  issuer_did: string;
+  subject_did: string;
+  issued_at: string;
+  expires_at?: string;
+  claims: Record<string, unknown>;
+}
+
+export interface VerifiableClaim {
+  claim_type: 'identity' | 'affiliation' | 'credential' | 'cryptographic_proof';
+  claim?: string;
+  organization?: string;
+  role?: string;
+  statement?: string;
+  proof_type?: ProofType;
+  credential?: VerifiableCredential;
+}
+
+export interface ClaimVerification {
+  verified: boolean;
+  epistemic_tier: number;
+  proof_type: ProofType;
+  verified_at: string;
+}
+
+export interface VerifyClaimsResponse {
+  verifications: ClaimVerification[];
+  overall_epistemic_tier: number;
+  all_verified: boolean;
+}
+
+export interface CredentialsListResponse {
+  credentials: VerifiableCredential[];
+  assurance_level: AssuranceLevel;
+}
+
+export interface AttachClaimResponse {
+  claim: VerifiableClaim;
+  proof: string;
+  epistemic_tier: number;
+}
+
+export interface AssuranceLevelResponse {
+  did: string;
+  level: AssuranceLevel;
+  attack_cost_usd: number;
+  trust_multiplier: number;
+}
+
+// AI types
+export type EmailIntent = 'meeting_request' | 'action_item' | 'fyi' | 'question' | 'social_greeting' | 'commercial' | 'spam' | 'unknown';
+
+export interface AIInsights {
+  intent: EmailIntent;
+  sentiment: 'positive' | 'negative' | 'neutral' | 'mixed';
+  urgency: 'high' | 'medium' | 'low' | 'none';
+  key_topics: string[];
+  suggested_labels: string[];
+  reply_needed: boolean;
+  confidence: number;
+}
+
+export interface ThreadSummary {
+  summary: string;
+  key_points: string[];
+  action_items: string[];
+  participants_summary: Record<string, string>;
+  sentiment_arc: ('positive' | 'negative' | 'neutral')[];
+  thread_health: 'active' | 'stale' | 'resolved' | 'needs_attention';
+}
+
+export interface ReplySuggestion {
+  tone: 'formal' | 'casual' | 'friendly' | 'professional';
+  body: string;
+  confidence: number;
+}
+
+export interface DetectIntentResponse {
+  intent: EmailIntent;
+  suggested_action: string;
+  priority_weight: number;
+}
+
+export interface SuggestRepliesResponse {
+  suggestions: ReplySuggestion[];
+}
+
+export interface TrustExplanation {
+  summary: string;
+  factors: { factor: string; contribution: number; explanation: string }[];
+  recommendations: string[];
+  confidence: number;
+}
+
+export interface ConsciousnessState {
+  active: boolean;
+  model_loaded: boolean;
+  semantic_dimensions: number;
+  ltc_neurons: number;
+  inference_mode: 'local' | 'hybrid' | 'disabled';
+  last_inference_ms?: number;
+  safety_score: number;
+}
+
+// Trust Graph types
+export type RelationType = 'personal_contact' | 'professional_colleague' | 'organization_member' | 'verified_service' | 'community_member' | 'transitive';
+
+export interface TrustNode {
+  did: string;
+  display_name?: string;
+  assurance_level: AssuranceLevel;
+  node_type: 'person' | 'organization' | 'service' | 'unknown';
+}
+
+export interface TrustEdge {
+  from_did: string;
+  to_did: string;
+  relationship: RelationType;
+  weight: number;
+  created_at: string;
+  expires_at?: string;
+}
+
+export interface TrustHop {
+  from_did: string;
+  to_did: string;
+  relationship: RelationType;
+  weight: number;
+}
+
+export interface TrustPath {
+  hops: TrustHop[];
+  total_weight: number;
+  path_length: number;
+}
+
+export interface TrustGraph {
+  nodes: TrustNode[];
+  edges: TrustEdge[];
+  center_did: string;
+  depth: number;
+}
+
+export interface TrustAttestation {
+  id: string;
+  attestor_did: string;
+  subject_did: string;
+  message: string;
+  relationship: RelationType;
+  trust_score: number;
+  created_at: string;
+  expires_at?: string;
+}
+
+export interface CreateAttestationRequest {
+  subject_did: string;
+  message: string;
+  relationship: RelationType;
+  trust_score: number;
+  expires_days?: number;
+}
+
+export interface CreateAttestationResponse {
+  attestation: TrustAttestation;
+}
+
+export interface TrustEdgesResponse {
+  edges: TrustEdge[];
 }
 
 export const api = new ApiService();

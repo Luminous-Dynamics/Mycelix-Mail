@@ -150,7 +150,10 @@ mod tests {
     #[test]
     fn test_epistemic_tier_conversion() {
         assert_eq!(EpistemicTier::from_u8(0), Some(EpistemicTier::Tier0Null));
-        assert_eq!(EpistemicTier::from_u8(2), Some(EpistemicTier::Tier2PrivatelyVerifiable));
+        assert_eq!(
+            EpistemicTier::from_u8(2),
+            Some(EpistemicTier::Tier2PrivatelyVerifiable)
+        );
         assert_eq!(EpistemicTier::from_u8(5), None);
     }
 

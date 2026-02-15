@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::client::MycellixClient;
+use anyhow::{Context, Result};
 
 /// Get trust score for a DID
 pub async fn handle_get(client: &MycellixClient, did: String) -> Result<()> {
@@ -41,8 +41,14 @@ pub async fn handle_get(client: &MycellixClient, did: String) -> Result<()> {
             println!("No trust score found for this DID.");
             println!();
             println!("💡 Tips:");
-            println!("   • Use 'mycelix-mail trust sync {}' to fetch from MATL", did);
-            println!("   • Use 'mycelix-mail trust set {} <score>' to set manually", did);
+            println!(
+                "   • Use 'mycelix-mail trust sync {}' to fetch from MATL",
+                did
+            );
+            println!(
+                "   • Use 'mycelix-mail trust set {} <score>' to set manually",
+                did
+            );
         }
     }
 
@@ -91,11 +97,7 @@ pub async fn handle_set(client: &MycellixClient, did: String, score: f64) -> Res
 }
 
 /// List all trust scores
-pub async fn handle_list(
-    client: &MycellixClient,
-    min: Option<f64>,
-    sort: bool,
-) -> Result<()> {
+pub async fn handle_list(client: &MycellixClient, min: Option<f64>, sort: bool) -> Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("                  TRUST SCORES");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -145,7 +147,8 @@ pub async fn handle_list(
     println!();
 
     // Table header
-    println!("{:<40} {:<8} {:<12} {:<10}",
+    println!(
+        "{:<40} {:<8} {:<12} {:<10}",
         "DID", "Score", "Source", "Updated"
     );
     println!("{}", "─".repeat(70));
@@ -157,7 +160,8 @@ pub async fn handle_list(
         let source_short = truncate_string(&score.source, 10);
         let updated = format_relative_time(score.last_updated);
 
-        println!("{:<40} {:<8} {:<12} {:<10}",
+        println!(
+            "{:<40} {:<8} {:<12} {:<10}",
             did_short, score_str, source_short, updated
         );
     }
@@ -219,8 +223,8 @@ pub async fn handle_sync(client: &MycellixClient, did: Option<String>) -> Result
 
             if !trust_scores.is_empty() {
                 println!("Summary:");
-                let avg_score: f64 = trust_scores.iter().map(|s| s.score).sum::<f64>()
-                    / trust_scores.len() as f64;
+                let avg_score: f64 =
+                    trust_scores.iter().map(|s| s.score).sum::<f64>() / trust_scores.len() as f64;
                 println!("   • Average Score: {:.2}", avg_score);
                 println!("   • Total DIDs:    {}", trust_scores.len());
             }
@@ -238,16 +242,14 @@ pub async fn handle_sync(client: &MycellixClient, did: Option<String>) -> Result
 /// Format timestamp as human-readable string
 fn format_timestamp(ts: i64) -> String {
     use chrono::{DateTime, Utc};
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 /// Format timestamp as relative time (e.g., "2d ago")
 fn format_relative_time(ts: i64) -> String {
     use chrono::{DateTime, Utc};
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
     let now = Utc::now();
     let duration = now.signed_duration_since(dt);
 
@@ -278,11 +280,7 @@ fn format_trust_bar(score: f64) -> String {
     let filled = (score * 20.0).round() as usize;
     let empty = 20 - filled;
 
-    let bar = format!(
-        "[{}{}]",
-        "█".repeat(filled),
-        "░".repeat(empty)
-    );
+    let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
 
     format!("{} {:.0}%", bar, score * 100.0)
 }

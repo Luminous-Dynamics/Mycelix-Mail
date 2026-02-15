@@ -20,6 +20,11 @@ export const config = {
   rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
   rateLimitMaxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
 
+  // Trust / MATL
+  trustCacheTtlMs: parseInt(process.env.TRUST_CACHE_TTL_MS || `${1000 * 60 * 60}`, 10), // default 1 hour
+  trustProviderUrl: process.env.TRUST_PROVIDER_URL,
+  trustProviderApiKey: process.env.TRUST_PROVIDER_API_KEY,
+
   // Encryption
   encryptionKey: process.env.ENCRYPTION_KEY || 'default-key-32-chars-long-pls!',
 

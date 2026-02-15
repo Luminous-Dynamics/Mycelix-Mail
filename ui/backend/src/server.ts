@@ -2,13 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { config } from './config';
+import axios from 'axios';
 import { errorHandler } from './middleware/errorHandler';
 import { authRoutes } from './routes/auth.routes';
 import { accountRoutes } from './routes/account.routes';
 import { emailRoutes } from './routes/email.routes';
 import { folderRoutes } from './routes/folder.routes';
+import { trustRoutes } from './routes/trust.routes';
 import { setupWebSocket } from './websocket';
 import { rateLimiter } from './middleware/rateLimiter';
+import { trustService } from './services/trust.service';
 
 const app = express();
 
@@ -36,6 +39,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/folders', folderRoutes);
+app.use('/api/trust', trustRoutes);
 
 // Error handling
 app.use(errorHandler);
@@ -43,9 +47,35 @@ app.use(errorHandler);
 // Start server
 const server = app.listen(config.port, () => {
   console.log(`🚀 Server running on port ${config.port}`);
-  console.log(`📧 Mycelix-Mail API ready`);
-  console.log(`🌍 Environment: ${config.nodeEnv}`);
+console.log(`📧 Mycelix-Mail API ready`);
+console.log(`🌍 Environment: ${config.nodeEnv}`);
+console.log(`🛡️ Trust cache TTL: ${config.trustCacheTtlMs / 60000} minutes`);
 });
+
+// Optional external trust provider (e.g., MATL/Holochain bridge)
+if (config.trustProviderUrl) {
+  trustService.registerProvider(async (sender: string) => {
+    const resp = await axios.get(config.trustProviderUrl as string, {
+      params: { sender },
+      headers: config.trustProviderApiKey
+        ? { 'x-api-key': config.trustProviderApiKey }
+        : undefined,
+    });
+    const summary = (resp.data?.data?.summary || resp.data?.summary) as any;
+    if (!summary) return null;
+    return {
+      score: summary.score,
+      tier: summary.tier,
+      reasons: summary.reasons || [],
+      pathLength: summary.pathLength,
+      decayAt: summary.decayAt,
+      attestations: summary.attestations || [],
+      quarantined: summary.quarantined,
+      fetchedAt: summary.fetchedAt || new Date().toISOString(),
+    };
+  });
+  console.log(`🔗 Trust provider registered: ${config.trustProviderUrl}`);
+}
 
 // Setup WebSocket
 setupWebSocket(server);

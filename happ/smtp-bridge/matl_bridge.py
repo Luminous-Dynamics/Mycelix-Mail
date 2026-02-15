@@ -39,12 +39,20 @@ class MATLBridge:
         self.hc = None
 
     async def connect(self):
-        """Connect to Holochain conductor"""
+        """Connect to Holochain conductor and discover cell ID"""
         print(f"🔌 Connecting to Holochain at {self.holochain_url}...")
 
         try:
             self.hc = await HolochainClient.connect(self.holochain_url)
             print("✅ Connected to Holochain")
+
+            # Discover and cache the cell ID
+            cell_id = await self.discover_cell_id()
+            if cell_id:
+                print(f"✅ Cell ID discovered successfully")
+            else:
+                print("⚠️  Cell ID not discovered - some operations may fail")
+
         except Exception as e:
             print(f"❌ Failed to connect to Holochain: {e}")
             raise
@@ -53,59 +61,95 @@ class MATLBridge:
         """
         Query Holochain for all DIDs that have sent or received messages
 
-        In production, this would query the DHT for all unique sender DIDs.
-        For MVP, we'll use a mock list.
+        Queries the DHT via the mail_messages zome for all unique sender/receiver DIDs.
         """
-        # TODO: Implement real query
-        # Should query all MailMessage entries and extract unique from_did values
+        try:
+            # Query Holochain DHT for all active DIDs via mail_messages zome
+            result = await self.hc.call_zome(
+                cell_id=self.get_cell_id(),
+                zome_name="mail_messages",
+                fn_name="get_active_dids",
+                payload={}
+            )
 
-        # Mock data for testing
-        return [
-            "did:mycelix:alice123",
-            "did:mycelix:bob456",
-            "did:mycelix:spammer789",
-        ]
+            if result and isinstance(result, list):
+                print(f"   Retrieved {len(result)} DIDs from DHT")
+                return result
+
+            # Fallback: Query trust_filter zome for known DIDs
+            trust_result = await self.hc.call_zome(
+                cell_id=self.get_cell_id(),
+                zome_name="trust_filter",
+                fn_name="get_all_trust_scores",
+                payload={}
+            )
+
+            if trust_result and isinstance(trust_result, list):
+                dids = [entry.get("did") for entry in trust_result if entry.get("did")]
+                print(f"   Retrieved {len(dids)} DIDs from trust_filter")
+                return dids
+
+            return []
+
+        except Exception as e:
+            print(f"   Warning: Could not query DHT for DIDs: {e}")
+            # Return empty list if DHT query fails - no mock data in production
+            return []
 
     async def get_matl_trust_score(self, did: str) -> dict:
         """
         Query MATL system for a DID's trust score
 
-        In production, this would call the actual MATL API from 0TML.
-        For MVP, we'll simulate scores.
+        Calls the MATL HTTP API to get composite trust scores including
+        POGQ, TCDM, and entropy metrics.
         """
-        # TODO: Connect to real MATL system
-        # from zerotrustml.matl import MATLClient
-        # matl = MATLClient(mode="mode1", oracle_endpoint=self.matl_endpoint)
-        # score = await matl.get_composite_trust_score(did)
+        import aiohttp
 
-        # Simulated trust scores for testing
-        if "spammer" in did:
-            return {
-                "did": did,
-                "score": 0.05,  # Very low trust
-                "pogq": 0.1,
-                "tcdm": 0.0,
-                "entropy": 0.05,
-                "source": "matl_mode1"
-            }
-        elif "alice" in did:
-            return {
-                "did": did,
-                "score": 0.85,  # High trust
-                "pogq": 0.9,
-                "tcdm": 0.8,
-                "entropy": 0.85,
-                "source": "matl_mode1"
-            }
-        else:
-            return {
-                "did": did,
-                "score": 0.5,  # Neutral (new user)
-                "pogq": 0.5,
-                "tcdm": 0.5,
-                "entropy": 0.5,
-                "source": "matl_mode1"
-            }
+        try:
+            # Query MATL HTTP API for trust score
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.matl_endpoint}/api/v1/trust/score/{did}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return {
+                            "did": did,
+                            "score": data.get("composite_score", 0.5),
+                            "pogq": data.get("pogq_score", 0.5),
+                            "tcdm": data.get("tcdm_score", 0.5),
+                            "entropy": data.get("entropy_score", 0.5),
+                            "source": "matl_mode1"
+                        }
+                    elif response.status == 404:
+                        # DID not found in MATL - return neutral score for new users
+                        print(f"   DID {did} not found in MATL, assigning neutral score")
+                        return {
+                            "did": did,
+                            "score": 0.5,
+                            "pogq": 0.5,
+                            "tcdm": 0.5,
+                            "entropy": 0.5,
+                            "source": "matl_mode1_default"
+                        }
+                    else:
+                        print(f"   Warning: MATL API returned status {response.status} for {did}")
+
+        except aiohttp.ClientError as e:
+            print(f"   Warning: MATL API connection error for {did}: {e}")
+        except asyncio.TimeoutError:
+            print(f"   Warning: MATL API timeout for {did}")
+        except Exception as e:
+            print(f"   Warning: Unexpected error querying MATL for {did}: {e}")
+
+        # Fallback: Return neutral score if MATL is unavailable
+        return {
+            "did": did,
+            "score": 0.5,
+            "pogq": 0.5,
+            "tcdm": 0.5,
+            "entropy": 0.5,
+            "source": "matl_fallback"
+        }
 
     async def update_holochain_trust_score(self, trust_data: dict):
         """
@@ -129,16 +173,52 @@ class MATLBridge:
             print(f"  ❌ Failed to update {trust_data['did']}: {e}")
             return None
 
+    async def discover_cell_id(self):
+        """
+        Discover the cell ID for the mycelix-mail DNA from the conductor.
+
+        Queries the Holochain conductor for installed apps and finds the
+        cell ID for the mycelix_mail DNA.
+        """
+        try:
+            # Get app info from the conductor
+            app_info = await self.hc.app_info()
+
+            if not app_info:
+                print("   Warning: Could not get app info from conductor")
+                return None
+
+            # Look for mycelix_mail DNA in the installed cells
+            for role_name, cell_info in app_info.cell_info.items():
+                if "mail" in role_name.lower() or "mycelix" in role_name.lower():
+                    # Extract cell_id from the first provisioned cell
+                    if cell_info and hasattr(cell_info, 'cell_id'):
+                        self._cell_id = cell_info.cell_id
+                        print(f"   Discovered cell ID for role: {role_name}")
+                        return self._cell_id
+
+            # Fallback: use the first available cell
+            for role_name, cell_info in app_info.cell_info.items():
+                if cell_info and hasattr(cell_info, 'cell_id'):
+                    self._cell_id = cell_info.cell_id
+                    print(f"   Using first available cell ID for role: {role_name}")
+                    return self._cell_id
+
+            print("   Warning: No cells found in app info")
+            return None
+
+        except Exception as e:
+            print(f"   Warning: Cell ID discovery failed: {e}")
+            return None
+
     def get_cell_id(self):
         """
-        Get the cell ID for the mycelix-mail DNA
+        Get the cached cell ID for the mycelix-mail DNA.
 
-        In production, this would be configured or discovered.
-        For MVP, we need to get it from the conductor.
+        Returns the previously discovered cell ID, or None if not yet discovered.
+        Call discover_cell_id() during initialization to populate this.
         """
-        # TODO: Implement proper cell ID discovery
-        # For now, return None and let the error guide us
-        return None
+        return getattr(self, '_cell_id', None)
 
     async def sync_trust_scores(self):
         """

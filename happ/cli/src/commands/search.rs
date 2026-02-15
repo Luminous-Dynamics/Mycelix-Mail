@@ -1,6 +1,7 @@
-use anyhow::{Context, Result};
 use crate::client::MycellixClient;
-use crate::types::{MailMessage, EpistemicTier};
+use crate::types::{EpistemicTier, MailMessage};
+use anyhow::{Context, Result};
+use std::collections::HashMap;
 
 /// Search messages across inbox and sent folders
 pub async fn handle_search(
@@ -40,13 +41,27 @@ pub async fn handle_search(
     println!("🔎 Searching {} total message(s)...", all_messages.len());
     println!();
 
-    // 3. Apply search filter
-    let mut results = search_messages(&all_messages, &query, in_field);
+    // 3. Pre-fetch body content if searching in body field
+    let mut body_cache = HashMap::new();
+    if in_field == "body" || in_field == "all" {
+        println!("Fetching message bodies for search...");
+        for msg in &all_messages {
+            if let Some(body) = fetch_body_content(&msg.body_cid).await {
+                body_cache.insert(msg.body_cid.clone(), body);
+            }
+        }
+        if !body_cache.is_empty() {
+            println!("Fetched {} message bod(ies)", body_cache.len());
+        }
+    }
 
-    // 4. Sort by timestamp (newest first)
+    // 4. Apply search filter with body cache
+    let mut results = search_messages_with_cache(&all_messages, &query, in_field, &body_cache);
+
+    // 5. Sort by timestamp (newest first)
     results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    // 5. Apply limit
+    // 6. Apply limit
     let total_results = results.len();
     results.truncate(limit);
 
@@ -64,7 +79,11 @@ pub async fn handle_search(
 
     // 6. Display results
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Found {} result(s), showing {}", total_results, results.len());
+    println!(
+        "Found {} result(s), showing {}",
+        total_results,
+        results.len()
+    );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
@@ -76,14 +95,52 @@ pub async fn handle_search(
 
     println!();
     if results.len() < total_results {
-        println!("💡 Showing first {} results. Use --limit {} to see more.", limit, total_results);
+        println!(
+            "💡 Showing first {} results. Use --limit {} to see more.",
+            limit, total_results
+        );
     }
 
     Ok(())
 }
 
-/// Search messages based on query and field
-fn search_messages(messages: &[MailMessage], query: &str, field: &str) -> Vec<MailMessage> {
+/// Fetch body content from IPFS/DHT using CID
+async fn fetch_body_content(cid: &str) -> Option<String> {
+    // Try local IPFS gateway first
+    let ipfs_gateways = [
+        "http://localhost:8080/ipfs",
+        "http://127.0.0.1:8080/ipfs",
+        "https://ipfs.io/ipfs",
+        "https://dweb.link/ipfs",
+    ];
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    for gateway in ipfs_gateways {
+        let url = format!("{}/{}", gateway, cid);
+        match client.get(&url).send().await {
+            Ok(response) if response.status().is_success() => {
+                if let Ok(text) = response.text().await {
+                    return Some(text);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    None
+}
+
+/// Search messages based on query and field with body content support
+fn search_messages_with_cache(
+    messages: &[MailMessage],
+    query: &str,
+    field: &str,
+    body_cache: &HashMap<String, String>,
+) -> Vec<MailMessage> {
     let query_lower = query.to_lowercase();
 
     messages
@@ -97,17 +154,27 @@ fn search_messages(messages: &[MailMessage], query: &str, field: &str) -> Vec<Ma
                     subject.to_lowercase().contains(&query_lower)
                 }
                 "body" => {
-                    // TODO: Fetch and search body from CID
-                    // For now, just search in body_cid
-                    msg.body_cid.to_lowercase().contains(&query_lower)
+                    // Search in fetched body content if available
+                    if let Some(body) = body_cache.get(&msg.body_cid) {
+                        body.to_lowercase().contains(&query_lower)
+                    } else {
+                        // Fall back to CID search
+                        msg.body_cid.to_lowercase().contains(&query_lower)
+                    }
                 }
                 "all" | _ => {
                     // Search in all fields
                     let subject = decrypt_subject(&msg.subject_encrypted);
+                    let body_match = if let Some(body) = body_cache.get(&msg.body_cid) {
+                        body.to_lowercase().contains(&query_lower)
+                    } else {
+                        msg.body_cid.to_lowercase().contains(&query_lower)
+                    };
+
                     msg.from_did.to_lowercase().contains(&query_lower)
                         || msg.to_did.to_lowercase().contains(&query_lower)
                         || subject.to_lowercase().contains(&query_lower)
-                        || msg.body_cid.to_lowercase().contains(&query_lower)
+                        || body_match
                 }
             }
         })
@@ -115,9 +182,15 @@ fn search_messages(messages: &[MailMessage], query: &str, field: &str) -> Vec<Ma
         .collect()
 }
 
+/// Legacy search function for backward compatibility
+fn search_messages(messages: &[MailMessage], query: &str, field: &str) -> Vec<MailMessage> {
+    search_messages_with_cache(messages, query, field, &HashMap::new())
+}
+
 /// Display results in table format
 fn display_table(messages: &[MailMessage], query: &str) {
-    println!("{:<6} {:<30} {:<30} {:<25} {:<6}",
+    println!(
+        "{:<6} {:<30} {:<30} {:<25} {:<6}",
         "ID", "From", "To", "Subject", "Tier"
     );
     println!("{}", "─".repeat(100));
@@ -137,7 +210,8 @@ fn display_table(messages: &[MailMessage], query: &str) {
             subject_short
         };
 
-        println!("{:<6} {:<30} {:<30} {:<25} {:<6}",
+        println!(
+            "{:<6} {:<30} {:<30} {:<25} {:<6}",
             msg_id, from_short, to_short, subject_display, tier_short
         );
     }
@@ -149,8 +223,8 @@ fn display_table(messages: &[MailMessage], query: &str) {
 
 /// Display results in JSON format
 fn display_json(messages: &[MailMessage]) -> Result<()> {
-    let json = serde_json::to_string_pretty(messages)
-        .context("Failed to serialize messages to JSON")?;
+    let json =
+        serde_json::to_string_pretty(messages).context("Failed to serialize messages to JSON")?;
     println!("{}", json);
     Ok(())
 }
@@ -248,8 +322,14 @@ mod tests {
     #[test]
     fn test_format_tier_short() {
         assert_eq!(format_tier_short(&EpistemicTier::Tier0Null), "T0");
-        assert_eq!(format_tier_short(&EpistemicTier::Tier2PrivatelyVerifiable), "T2");
-        assert_eq!(format_tier_short(&EpistemicTier::Tier4PubliclyReproducible), "T4");
+        assert_eq!(
+            format_tier_short(&EpistemicTier::Tier2PrivatelyVerifiable),
+            "T2"
+        );
+        assert_eq!(
+            format_tier_short(&EpistemicTier::Tier4PubliclyReproducible),
+            "T4"
+        );
     }
 
     #[test]
@@ -298,17 +378,15 @@ mod tests {
 
     #[test]
     fn test_search_messages_all_fields() {
-        let messages = vec![
-            MailMessage {
-                from_did: "did:mycelix:sender1".to_string(),
-                to_did: "did:mycelix:recipient1".to_string(),
-                subject_encrypted: b"ENC:Important Message".to_vec(),
-                body_cid: "bafyrei123".to_string(),
-                timestamp: 1234567890,
-                thread_id: None,
-                epistemic_tier: EpistemicTier::Tier2PrivatelyVerifiable,
-            },
-        ];
+        let messages = vec![MailMessage {
+            from_did: "did:mycelix:sender1".to_string(),
+            to_did: "did:mycelix:recipient1".to_string(),
+            subject_encrypted: b"ENC:Important Message".to_vec(),
+            body_cid: "bafyrei123".to_string(),
+            timestamp: 1234567890,
+            thread_id: None,
+            epistemic_tier: EpistemicTier::Tier2PrivatelyVerifiable,
+        }];
 
         // Should find by sender
         let results = search_messages(&messages, "sender1", "all");

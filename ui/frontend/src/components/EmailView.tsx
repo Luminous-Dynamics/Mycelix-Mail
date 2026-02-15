@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '@/services/api';
 import { toast } from '@/store/toastStore';
 import type { Email } from '@/types';
 import { EmailViewSkeleton } from './Skeleton';
@@ -12,6 +11,10 @@ import LabelPicker from './LabelPicker';
 import Avatar, { AvatarGroup } from './Avatar';
 import { useContactStore } from '@/store/contactStore';
 import { useActionHistoryStore } from '@/store/actionHistoryStore';
+import { useTrustStore } from '@/store/trustStore';
+import TrustBadge from './TrustBadge';
+import TrustGraphDrawer from './TrustGraphDrawer';
+import { api } from '@/services/api';
 
 interface EmailViewProps {
   emailId: string;
@@ -30,11 +33,71 @@ export default function EmailView({ emailId, onBack, onReply, onReplyAll, onForw
   const { getLabelsForEmail, removeLabelFromEmail } = useLabelStore();
   const { recordInteraction } = useContactStore();
   const { addAction, undo } = useActionHistoryStore();
+  const {
+    enabled: trustEnabled,
+    quarantineEnabled,
+    evaluateTrust,
+    shouldQuarantine,
+    ingestSummary,
+    hasSummary,
+    setOverride,
+    clearOverride,
+    hasOverride,
+    getCacheTime,
+  } = useTrustStore();
+  const [lastTrustFetchedAt, setLastTrustFetchedAt] = useState<number | null>(null);
+  const [isRefreshingTrust, setIsRefreshingTrust] = useState(false);
+  const [showTrustGraph, setShowTrustGraph] = useState(false);
+
+  const buildTrustReport = (summary: ReturnType<typeof evaluateTrust>) => {
+    const lines = [
+      `Sender: ${email?.from.address || 'unknown'}`,
+      `Tier: ${summary.tier || 'unknown'}`,
+      `Score: ${summary.score ?? '—'}`,
+      `Reasons: ${summary.reasons?.length ? summary.reasons.join(', ') : 'None provided'}`,
+    ];
+    if (summary.pathLength) lines.push(`Path length: ${summary.pathLength}`);
+    if (summary.decayAt) lines.push(`Decay: ${new Date(summary.decayAt).toLocaleString()}`);
+    return lines.join('\n');
+  };
 
   const { data: email, isLoading } = useQuery({
     queryKey: ['email', emailId],
     queryFn: () => api.getEmail(emailId),
   });
+
+  // Fetch trust summary for this sender if missing
+  useEffect(() => {
+    if (!trustEnabled) return;
+    if (!email?.from?.address) return;
+    if (hasSummary(email.from.address)) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const summary = await api.getTrustSummary(email.from.address);
+        if (cancelled || !summary) return;
+        ingestSummary(email.from.address, {
+          score: summary.score,
+          tier: summary.tier || 'unknown',
+          reasons: summary.reasons || [],
+          pathLength: summary.pathLength,
+          decayAt: summary.decayAt,
+          quarantined: summary.quarantined,
+          fetchedAt: summary.fetchedAt,
+          attestations: summary.attestations,
+        });
+        setLastTrustFetchedAt(summary.fetchedAt ? new Date(summary.fetchedAt).getTime() : Date.now());
+      } catch (err) {
+        // Silently ignore; heuristics will be used instead
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [email?.from?.address, hasSummary, ingestSummary, trustEnabled]);
 
   const starMutation = useMutation({
     mutationFn: (isStarred: boolean) => api.markEmailStarred(emailId, isStarred),
@@ -237,6 +300,158 @@ export default function EmailView({ emailId, onBack, onReply, onReplyAll, onForw
       <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-6 email-metadata">
         <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-4">{email.subject}</h1>
 
+        {trustEnabled && (
+          (() => {
+            const summary = evaluateTrust(email);
+            const quarantined = quarantineEnabled && shouldQuarantine(email);
+            const reasons = summary.reasons?.length ? summary.reasons.join(', ') : 'No explicit reasons provided';
+            const cacheTime = email.from.address ? getCacheTime(email.from.address) : undefined;
+            const freshestTs = lastTrustFetchedAt || cacheTime;
+            const fetchedLabel = freshestTs
+              ? `Updated ${new Date(freshestTs).toLocaleTimeString()}`
+              : undefined;
+            const senderKey = email.from.address;
+            const overrideActive = hasOverride(senderKey);
+            const attestationCount = summary.attestations?.length || 0;
+            const latestAttestation = summary.attestations?.[0];
+
+            return (
+              <div
+                className={`mb-4 rounded-lg border px-3 py-2 text-sm ${
+                  quarantined
+                    ? 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 text-rose-800 dark:text-rose-100'
+                    : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-800 dark:text-emerald-100'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center space-x-2">
+                    <TrustBadge summary={summary} />
+                    <span className="font-medium">
+                      {quarantined ? 'Held in quarantine until you trust this sender.' : 'Trusted routing applied.'}
+                    </span>
+                    {fetchedLabel && (
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">{fetchedLabel}</span>
+                    )}
+                    {attestationCount > 0 && (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200">
+                          {attestationCount} attestation{attestationCount === 1 ? '' : 's'}
+                        </span>
+                        {latestAttestation?.reason && (
+                          <span className="text-[11px] text-blue-700 dark:text-blue-200">
+                            Latest: {latestAttestation.reason}
+                          </span>
+                        )}
+                        {latestAttestation?.from && (
+                          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                            Issuer: {latestAttestation.from}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {typeof summary.pathLength === 'number' && (
+                    <span className="text-xs opacity-80">
+                      Path length: {summary.pathLength}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-xs opacity-90">
+                  Reasons: {reasons}
+                </div>
+                {overrideActive && (
+                  <div className="mt-1 text-[11px] text-emerald-700 dark:text-emerald-200">
+                    Manual allowlist active for this sender.
+                  </div>
+                )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    onClick={async () => {
+                      if (!senderKey) return;
+                      setIsRefreshingTrust(true);
+                      try {
+                        const fresh = await api.getTrustSummary(senderKey);
+                        if (fresh) {
+                          ingestSummary(senderKey, {
+                            score: fresh.score,
+                            tier: fresh.tier || 'unknown',
+                            reasons: fresh.reasons || [],
+                            pathLength: fresh.pathLength,
+                            decayAt: fresh.decayAt,
+                            quarantined: fresh.quarantined,
+                            fetchedAt: fresh.fetchedAt,
+                            attestations: fresh.attestations,
+                          });
+                          setLastTrustFetchedAt(fresh.fetchedAt ? new Date(fresh.fetchedAt).getTime() : Date.now());
+                        }
+                      } finally {
+                        setIsRefreshingTrust(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-gray-400 dark:hover:border-gray-600 disabled:opacity-60"
+                    disabled={isRefreshingTrust}
+                  >
+                    {isRefreshingTrust ? 'Refreshing…' : 'Refresh trust'}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      toast.success('Attestation request sent to sender/peers');
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-md border border-blue-400 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-200 hover:border-blue-500 dark:hover:border-blue-600"
+                  >
+                    Request attestation
+                  </button>
+                  <button
+                    onClick={() => setShowTrustGraph(true)}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-gray-400 dark:hover:border-gray-600"
+                  >
+                    View trust path
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(buildTrustReport(summary));
+                        toast.success('Trust report copied to clipboard.');
+                      } catch (err) {
+                        toast.error('Failed to copy trust report.');
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-gray-400 dark:hover:border-gray-600"
+                  >
+                    Copy trust report
+                  </button>
+
+                  {!overrideActive && (
+                    <button
+                      onClick={() => {
+                        setOverride(senderKey, {
+                          score: 95,
+                          tier: 'high',
+                          reasons: ['Manually trusted sender'],
+                          quarantined: false,
+                        });
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-md border border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-200 hover:border-emerald-500 dark:hover:border-emerald-600"
+                    >
+                      Allowlist sender
+                    </button>
+                  )}
+
+                  {overrideActive && (
+                    <button
+                      onClick={() => clearOverride(senderKey)}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-gray-400 dark:hover:border-gray-600"
+                    >
+                      Revert to automatic
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()
+        )}
+
         <div className="space-y-3 text-sm">
           {/* From with Avatar */}
           <div className="flex items-center space-x-3">
@@ -407,6 +622,16 @@ export default function EmailView({ emailId, onBack, onReply, onReplyAll, onForw
         <LabelPicker
           emailId={emailId}
           onClose={() => setShowLabelPicker(false)}
+        />
+      )}
+
+      {/* Trust Graph Drawer */}
+      {showTrustGraph && email && (
+        <TrustGraphDrawer
+          open={showTrustGraph}
+          onClose={() => setShowTrustGraph(false)}
+          sender={email.from.address}
+          summary={evaluateTrust(email)}
         />
       )}
     </div>

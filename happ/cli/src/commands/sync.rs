@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::client::MycellixClient;
+use anyhow::{Context, Result};
 
 /// Update local cache from DHT and MATL
 pub async fn handle_sync(client: &MycellixClient, force: bool) -> Result<()> {
@@ -68,8 +68,18 @@ pub async fn handle_sync(client: &MycellixClient, force: bool) -> Result<()> {
     println!();
 
     println!("📬 Messages:      {} new", sync_summary.messages_synced);
-    println!("🔐 Trust Scores:  {} updated", sync_summary.trust_scores_synced);
-    println!("📊 Statistics:    {}", if sync_summary.stats_updated { "Updated" } else { "Not updated" });
+    println!(
+        "🔐 Trust Scores:  {} updated",
+        sync_summary.trust_scores_synced
+    );
+    println!(
+        "📊 Statistics:    {}",
+        if sync_summary.stats_updated {
+            "Updated"
+        } else {
+            "Not updated"
+        }
+    );
 
     if sync_summary.has_failures() {
         println!();
@@ -85,18 +95,42 @@ pub async fn handle_sync(client: &MycellixClient, force: bool) -> Result<()> {
 }
 
 /// Sync messages from DHT
+///
+/// Fetches inbox and outbox messages from Holochain DHT
+/// and returns the total count of messages synced
 async fn sync_messages(client: &MycellixClient) -> Result<usize> {
-    // TODO: Implement actual DHT sync
-    // In real implementation:
-    // 1. Connect to Holochain DHT
-    // 2. Query for new messages since last sync
-    // 3. Download and decrypt new messages
-    // 4. Update local cache
-    // 5. Return count of new messages
+    let mut total_synced = 0;
 
-    // For now, return 0 (no new messages in stub mode)
-    let _ = client; // Suppress unused warning
-    Ok(0)
+    // Check Holochain connection status
+    if !client.is_holochain_connected().await {
+        println!("   Holochain not connected, attempting to sync via HTTP fallback...");
+    }
+
+    // Sync inbox messages
+    match client.get_inbox().await {
+        Ok(inbox) => {
+            let inbox_count = inbox.len();
+            println!("   Fetched {} inbox message(s)", inbox_count);
+            total_synced += inbox_count;
+        }
+        Err(e) => {
+            println!("   Warning: Could not fetch inbox: {}", e);
+        }
+    }
+
+    // Sync outbox (sent) messages
+    match client.get_sent().await {
+        Ok(sent) => {
+            let sent_count = sent.len();
+            println!("   Fetched {} sent message(s)", sent_count);
+            total_synced += sent_count;
+        }
+        Err(e) => {
+            println!("   Warning: Could not fetch sent messages: {}", e);
+        }
+    }
+
+    Ok(total_synced)
 }
 
 /// Sync trust scores from MATL
@@ -111,14 +145,25 @@ async fn sync_trust_scores(client: &MycellixClient) -> Result<usize> {
 }
 
 /// Update local mailbox statistics
-async fn update_stats(_client: &MycellixClient) -> Result<()> {
-    // TODO: Implement stats update
-    // In real implementation:
-    // 1. Recalculate total messages
-    // 2. Recalculate unread count
-    // 3. Update contact list
-    // 4. Update last sync timestamp
-    // 5. Store in local cache
+///
+/// Calculates and displays current mailbox statistics
+async fn update_stats(client: &MycellixClient) -> Result<()> {
+    // Get statistics from client
+    let stats = client
+        .get_stats()
+        .await
+        .context("Failed to get statistics")?;
+
+    println!("   Total messages: {}", stats.total_messages);
+    println!("   Unread messages: {}", stats.unread_messages);
+    println!("   Contacts: {}", stats.total_contacts);
+    println!("   Trust scores: {}", stats.total_trust_scores);
+
+    if let Some(last_sync) = stats.last_sync {
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(last_sync, 0)
+            .unwrap_or_else(|| chrono::Utc::now());
+        println!("   Last sync: {}", dt.format("%Y-%m-%d %H:%M:%S UTC"));
+    }
 
     Ok(())
 }

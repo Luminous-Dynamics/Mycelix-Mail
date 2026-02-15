@@ -80,18 +80,29 @@ pub struct PreferencesConfig {
 }
 
 // Default value functions
-fn default_timeout() -> u64 { 30 }
-fn default_app_id() -> Option<String> { Some("mycelix-mail".to_string()) }
-fn default_tier() -> u8 { 2 }
-fn default_true() -> bool { true }
-fn default_cache_ttl() -> u64 { 3600 }
-fn default_format() -> String { "table".to_string() }
+fn default_timeout() -> u64 {
+    30
+}
+fn default_app_id() -> Option<String> {
+    Some("mycelix-mail".to_string())
+}
+fn default_tier() -> u8 {
+    2
+}
+fn default_true() -> bool {
+    true
+}
+fn default_cache_ttl() -> u64 {
+    3600
+}
+fn default_format() -> String {
+    "table".to_string()
+}
 
 impl Config {
     /// Get the default config directory path
     pub fn config_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Could not determine home directory")?;
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".mycelix-mail"))
     }
 
@@ -124,8 +135,7 @@ impl Config {
         let contents = fs::read_to_string(&config_file)
             .with_context(|| format!("Failed to read config file: {:?}", config_file))?;
 
-        let config: Config = toml::from_str(&contents)
-            .context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -137,14 +147,11 @@ impl Config {
         let keys_dir = Self::keys_dir()?;
 
         // Create directories if they don't exist
-        fs::create_dir_all(&config_dir)
-            .context("Failed to create config directory")?;
-        fs::create_dir_all(&keys_dir)
-            .context("Failed to create keys directory")?;
+        fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
+        fs::create_dir_all(&keys_dir).context("Failed to create keys directory")?;
 
         // Serialize config to TOML
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         // Write to file
         fs::write(&config_file, contents)

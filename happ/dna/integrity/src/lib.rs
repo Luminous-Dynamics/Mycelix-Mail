@@ -1,5 +1,5 @@
-use hdk::prelude::*;
-use holochain_serialized_bytes::prelude::*;
+// Holochain 0.6 - Integrity zomes use hdi
+use hdi::prelude::*;
 
 /// Core mail message entry type
 #[hdk_entry_helper]
@@ -21,7 +21,7 @@ pub struct TrustScore {
     pub did: String,
     pub score: f64, // 0.0 - 1.0
     pub last_updated: Timestamp,
-    pub matl_source: String,
+    pub source: String,
 }
 
 /// Epistemic tiers from Mycelix Epistemic Charter v2.0
@@ -66,17 +66,12 @@ pub struct SpamReport {
 
 /// Entry types for the DNA
 #[hdk_entry_types]
-#[unit_enum(UnitEntryTypes)]
+#[unit_enum(EntryTypesUnit)]
 pub enum EntryTypes {
-    #[entry_type]
     MailMessage(MailMessage),
-    #[entry_type]
     TrustScore(TrustScore),
-    #[entry_type]
     Contact(Contact),
-    #[entry_type]
     DidBinding(DidBinding),
-    #[entry_type]
     SpamReport(SpamReport),
 }
 
@@ -95,68 +90,91 @@ pub enum LinkTypes {
 
 /// Basic validation to guard against malformed data
 #[hdk_extern]
-pub fn validate(_op: Op) -> ExternResult<ValidateCallbackResult> {
-    match _op {
-        Op::StoreEntry(store_entry) => {
-            match store_entry.entry {
-                EntryTypes::TrustScore(score) => {
-                    if !(0.0..=1.0).contains(&score.score) {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Trust score must be between 0.0 and 1.0".into(),
-                        ));
-                    }
-                    if score.did.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Trust score DID cannot be empty".into(),
-                        ));
-                    }
-                }
-                EntryTypes::MailMessage(message) => {
-                    if message.from_did.trim().is_empty() || message.to_did.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Message DIDs cannot be empty".into(),
-                        ));
-                    }
-                    if message.subject_encrypted.is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Subject cannot be empty".into(),
-                        ));
-                    }
-                    if message.body_cid.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Body CID cannot be empty".into(),
-                        ));
-                    }
-                }
-                EntryTypes::DidBinding(binding) => {
-                    if binding.did.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "DID cannot be empty".into(),
-                        ));
-                    }
-                }
-                EntryTypes::SpamReport(report) => {
-                    if report.spammer_did.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Spam report must include spammer DID".into(),
-                        ));
-                    }
-                    if report.reason.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Spam report reason cannot be empty".into(),
-                        ));
-                    }
-                }
-                EntryTypes::Contact(contact) => {
-                    if contact.did.trim().is_empty() {
-                        return Ok(ValidateCallbackResult::Invalid(
-                            "Contact DID cannot be empty".into(),
-                        ));
-                    }
+pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
+    match op {
+        Op::StoreEntry(store_entry) => match store_entry.action.hashed.content.entry_type() {
+            EntryType::App(app_entry_def) => {
+                let entry = store_entry.entry;
+                match EntryTypes::deserialize_from_type(
+                    app_entry_def.zome_index,
+                    app_entry_def.entry_index,
+                    &entry,
+                )? {
+                    Some(EntryTypes::TrustScore(score)) => validate_trust_score(score),
+                    Some(EntryTypes::MailMessage(message)) => validate_mail_message(message),
+                    Some(EntryTypes::DidBinding(binding)) => validate_did_binding(binding),
+                    Some(EntryTypes::SpamReport(report)) => validate_spam_report(report),
+                    Some(EntryTypes::Contact(contact)) => validate_contact(contact),
+                    None => Ok(ValidateCallbackResult::Valid),
                 }
             }
-            Ok(ValidateCallbackResult::Valid)
-        }
+            _ => Ok(ValidateCallbackResult::Valid),
+        },
         _ => Ok(ValidateCallbackResult::Valid),
     }
+}
+
+fn validate_trust_score(score: TrustScore) -> ExternResult<ValidateCallbackResult> {
+    if !(0.0..=1.0).contains(&score.score) {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Trust score must be between 0.0 and 1.0".into(),
+        ));
+    }
+    if score.did.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Trust score DID cannot be empty".into(),
+        ));
+    }
+    Ok(ValidateCallbackResult::Valid)
+}
+
+fn validate_mail_message(message: MailMessage) -> ExternResult<ValidateCallbackResult> {
+    if message.from_did.trim().is_empty() || message.to_did.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Message DIDs cannot be empty".into(),
+        ));
+    }
+    if message.subject_encrypted.is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Subject cannot be empty".into(),
+        ));
+    }
+    if message.body_cid.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Body CID cannot be empty".into(),
+        ));
+    }
+    Ok(ValidateCallbackResult::Valid)
+}
+
+fn validate_did_binding(binding: DidBinding) -> ExternResult<ValidateCallbackResult> {
+    if binding.did.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "DID cannot be empty".into(),
+        ));
+    }
+    Ok(ValidateCallbackResult::Valid)
+}
+
+fn validate_spam_report(report: SpamReport) -> ExternResult<ValidateCallbackResult> {
+    if report.spammer_did.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Spam report must include spammer DID".into(),
+        ));
+    }
+    if report.reason.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Spam report reason cannot be empty".into(),
+        ));
+    }
+    Ok(ValidateCallbackResult::Valid)
+}
+
+fn validate_contact(contact: Contact) -> ExternResult<ValidateCallbackResult> {
+    if contact.did.trim().is_empty() {
+        return Ok(ValidateCallbackResult::Invalid(
+            "Contact DID cannot be empty".into(),
+        ));
+    }
+    Ok(ValidateCallbackResult::Valid)
 }

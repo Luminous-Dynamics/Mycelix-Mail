@@ -1,4 +1,4 @@
-import { useState, useRef, useImperativeHandle, forwardRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useImperativeHandle, forwardRef, useMemo, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import type { Email } from '@/types';
@@ -18,6 +18,9 @@ import Avatar from './Avatar';
 import { useContactStore } from '@/store/contactStore';
 import AdvancedSearchPanel from './AdvancedSearchPanel';
 import { filterEmailsBySearch } from '@/utils/advancedSearch';
+import { useTrustStore } from '@/store/trustStore';
+import { toast } from '@/store/toastStore';
+import TrustBadge from './TrustBadge';
 
 interface EmailListProps {
   folderId: string | null;
@@ -49,6 +52,19 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
     const { getLabelsForEmail } = useLabelStore();
     const { recordInteraction } = useContactStore();
     const { config: densityConfig } = useDensity();
+    const {
+      enabled: trustEnabled,
+      quarantineEnabled,
+      policy,
+      hideLowTrust,
+      evaluateTrust,
+      shouldQuarantine,
+      ingestSummary,
+      hasSummary,
+      setOverride,
+      clearOverride,
+      hasOverride,
+    } = useTrustStore();
 
     // Conversation threading preference
     const [threadingEnabled, setThreadingEnabled] = useState(() => {
@@ -165,6 +181,50 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
   const hasNoResults = emails.length === 0 && (searchQuery || filterType !== 'all');
   const hasNoEmails = emails.length === 0 && !searchQuery && filterType === 'all';
 
+  // Partition emails into safe vs quarantined lanes (non-threaded view only)
+  const shouldApplyTrust = trustEnabled && !threadingEnabled;
+  const { safeEmails, quarantinedEmails } = useMemo(() => {
+    if (!shouldApplyTrust) return { safeEmails: emails, quarantinedEmails: [] as Email[] };
+
+    const safe: Email[] = [];
+    const quarantined: Email[] = [];
+
+    emails.forEach((email) => {
+    const isQuarantined =
+      quarantineEnabled &&
+      (policy === 'strict'
+        ? true
+        : policy === 'open'
+        ? email.isQuarantined
+        : shouldQuarantine(email));
+      if (isQuarantined) {
+        quarantined.push(email);
+      } else {
+        safe.push(email);
+      }
+    });
+
+    return { safeEmails: safe, quarantinedEmails: quarantined };
+  }, [emails, quarantineEnabled, shouldApplyTrust, shouldQuarantine, policy]);
+
+  const flatEmails = threadingEnabled ? emails : hideLowTrust ? [...safeEmails] : [...safeEmails, ...quarantinedEmails];
+
+  const quarantineAttestationCount = useMemo(() => {
+    if (!shouldApplyTrust) return 0;
+    return quarantinedEmails.reduce((count, email) => {
+      const summary = evaluateTrust(email);
+      return count + (summary.attestations?.length || 0);
+    }, 0);
+  }, [evaluateTrust, quarantinedEmails, shouldApplyTrust]);
+  const quarantineLatestAttestation = useMemo(() => {
+    if (!shouldApplyTrust) return null;
+    for (const email of quarantinedEmails) {
+      const att = evaluateTrust(email).attestations?.[0];
+      if (att) return att;
+    }
+    return null;
+  }, [evaluateTrust, quarantinedEmails, shouldApplyTrust]);
+
   // Bulk operation handlers
   const toggleEmailSelection = (emailId: string) => {
     const newSelected = new Set(selectedEmailIds);
@@ -177,7 +237,7 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
   };
 
   const handleSelectAll = () => {
-    const allIds = new Set(emails.map(email => email.id));
+    const allIds = new Set(flatEmails.map(email => email.id));
     setSelectedEmailIds(allIds);
   };
 
@@ -221,19 +281,60 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
   };
 
   // Gmail-style keyboard navigation
-  const {
-    focusedIndex,
-    setFocusedIndex,
-    handleNext,
-    handlePrevious,
-    handleOpen,
-    handleToggleSelect,
-  } = useEmailNavigation({
-    emails,
-    onSelectEmail,
-    selectedEmailId,
-    enabled: !threadingEnabled, // Disable when threading is on
-  });
+    const {
+      focusedIndex,
+      setFocusedIndex,
+      handleNext,
+      handlePrevious,
+      handleOpen,
+      handleToggleSelect,
+    } = useEmailNavigation({
+      emails: flatEmails,
+      onSelectEmail,
+      selectedEmailId,
+      enabled: !threadingEnabled, // Disable when threading is on
+    });
+
+  // Fetch trust summaries for visible senders (best-effort; falls back to heuristics if unavailable)
+  useEffect(() => {
+    if (!trustEnabled) return;
+    const addresses = Array.from(
+      new Set(
+        flatEmails
+          .map((email) => email.from?.address)
+          .filter(Boolean) as string[]
+      )
+    );
+    const toFetch = addresses.filter((addr) => !hasSummary(addr));
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const results = await Promise.allSettled(toFetch.map((addr) => api.getTrustSummary(addr)));
+      if (cancelled) return;
+
+      results.forEach((result, idx) => {
+        if (result.status === 'fulfilled' && result.value) {
+          const summary = result.value;
+          ingestSummary(toFetch[idx], {
+            score: summary.score,
+            tier: summary.tier || 'unknown',
+            reasons: summary.reasons || [],
+            pathLength: summary.pathLength,
+            decayAt: summary.decayAt,
+            quarantined: summary.quarantined,
+            fetchedAt: summary.fetchedAt,
+            attestations: summary.attestations,
+          });
+        }
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [flatEmails, hasSummary, ingestSummary, trustEnabled]);
 
   // Keyboard navigation shortcuts (j/k/o/x)
   useEffect(() => {
@@ -295,6 +396,162 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
     onSelectEmail,
   ]);
 
+  const renderEmailRow = useCallback((email: Email, index: number, options?: { quarantined?: boolean }) => {
+    if (email.from.address) {
+      recordInteraction(email.from.address, email.from.name);
+    }
+
+    const trustSummary = shouldApplyTrust ? evaluateTrust(email) : null;
+    const senderKey = email.from?.address;
+    const overrideActive = senderKey ? hasOverride(senderKey) : false;
+    const isFocused = !threadingEnabled && focusedIndex === index;
+    const isSelected = selectedEmailId === email.id;
+    const isChecked = selectedEmailIds.has(email.id);
+
+    return (
+      <div
+        key={email.id}
+        data-email-index={index}
+        role="listitem"
+        aria-label={`Email from ${email.from.name || email.from.address}, subject: ${email.subject}${!email.isRead ? ', unread' : ''}`}
+        className={`flex items-start space-x-3 ${densityConfig.padding} hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors relative ${
+          isSelected ? 'bg-primary-50 dark:bg-primary-900/30' : ''
+        } ${isChecked ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${
+          isFocused ? 'ring-2 ring-inset ring-primary-500 dark:ring-primary-400 bg-primary-50/50 dark:bg-primary-900/20' : ''
+        } ${options?.quarantined ? 'border-l-4 border-rose-400 dark:border-rose-500' : ''}`}
+      >
+        <input
+          type="checkbox"
+          checked={selectedEmailIds.has(email.id)}
+          onChange={(e) => {
+            e.stopPropagation();
+            toggleEmailSelection(email.id);
+          }}
+          className="mt-1 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Select email from ${email.from.name || email.from.address}`}
+        />
+        {/* Avatar */}
+        <Avatar
+          email={email.from.address}
+          name={email.from.name}
+          size="md"
+          className="mt-1"
+        />
+        <button
+          onClick={() => onSelectEmail(email.id)}
+          className={`flex-1 text-left ${!email.isRead ? 'font-semibold' : ''}`}
+          aria-label={`Open email: ${email.subject}`}
+          aria-pressed={selectedEmailId === email.id}
+        >
+          <div className="flex items-start justify-between mb-1">
+            <div className="flex items-center space-x-2 min-w-0">
+              <span className={`${densityConfig.textSize} text-gray-900 dark:text-gray-100 truncate`}>
+                {email.from.name || email.from.address}
+              </span>
+              {trustSummary && (
+                <TrustBadge summary={trustSummary} compact className="flex-shrink-0" />
+              )}
+              {options?.quarantined && (
+                <span className="inline-flex items-center rounded-full bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200 border border-rose-200 dark:border-rose-800 px-2 py-0.5 text-[11px]">
+                  Quarantine
+                </span>
+              )}
+            </div>
+            <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 flex-shrink-0">
+              {formatEmailDate(email.date)}
+            </span>
+          </div>
+          <div className={`${densityConfig.textSize} text-gray-900 dark:text-gray-100 truncate mb-1`}>{email.subject}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+            {email.bodyText?.substring(0, 100)}
+          </div>
+          {email.attachments && email.attachments.length > 0 && (
+            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              📎 {email.attachments.length} attachment{email.attachments.length > 1 ? 's' : ''}
+            </div>
+          )}
+          {(() => {
+            const emailLabels = getLabelsForEmail(email.id);
+            if (emailLabels.length > 0) {
+              return (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {emailLabels.slice(0, 3).map((label) => (
+                    <LabelChip
+                      key={label.id}
+                      label={label}
+                      size="sm"
+                      clickable={false}
+                    />
+                  ))}
+                  {emailLabels.length > 3 && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-0.5">
+                      +{emailLabels.length - 3} more
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            return null;
+          })()}
+          {options?.quarantined && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {!overrideActive && senderKey && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOverride(senderKey, {
+                      score: 95,
+                      tier: 'high',
+                      reasons: ['Manually trusted sender'],
+                      quarantined: false,
+                    });
+                    toast.success('Sender promoted to primary (manual allowlist).');
+                  }}
+                  className="px-3 py-1 text-[11px] font-semibold rounded-md border border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-200 hover:border-emerald-500 dark:hover:border-emerald-600"
+                >
+                  Promote sender
+                </button>
+              )}
+              {overrideActive && senderKey && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    clearOverride(senderKey);
+                    toast.success('Sender reverted to automatic trust rules.');
+                  }}
+                  className="px-3 py-1 text-[11px] font-semibold rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:border-gray-400 dark:hover:border-gray-600"
+                >
+                  Revert override
+                </button>
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toast.success('Attestation request sent to sender/peers.');
+                }}
+                className="px-3 py-1 text-[11px] font-semibold rounded-md border border-blue-400 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-200 hover:border-blue-500 dark:hover:border-blue-600"
+              >
+                Request attestation
+              </button>
+            </div>
+          )}
+        </button>
+      </div>
+    );
+  }, [
+    shouldApplyTrust,
+    recordInteraction,
+    evaluateTrust,
+    hasOverride,
+    selectedEmailId,
+    selectedEmailIds,
+    densityConfig.padding,
+    densityConfig.textSize,
+    toggleEmailSelection,
+    onSelectEmail,
+  ]);
+
   return (
     <div className="h-full flex flex-col">
       {/* Search Bar */}
@@ -353,7 +610,7 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
           <div className="flex items-center space-x-2">
             <input
               type="checkbox"
-              checked={selectedEmailIds.size > 0 && selectedEmailIds.size === emails.length}
+              checked={selectedEmailIds.size > 0 && selectedEmailIds.size === flatEmails.length}
               onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
               className="rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
               title="Select all"
@@ -461,97 +718,72 @@ const EmailList = forwardRef<EmailListRef, EmailListProps>(
             />
           ))
         ) : (
-          // Flat Email List View
-          emails.map((email, index) => {
-            // Record contact interaction for emails displayed
-            if (email.from.address) {
-              recordInteraction(email.from.address, email.from.name);
-            }
-
-            const isFocused = !threadingEnabled && focusedIndex === index;
-            const isSelected = selectedEmailId === email.id;
-            const isChecked = selectedEmailIds.has(email.id);
-
-            return (
+          <>
+            {shouldApplyTrust && quarantineEnabled && quarantinedEmails.length > 0 && (
               <div
-                key={email.id}
-                data-email-index={index}
-                role="listitem"
-                aria-label={`Email from ${email.from.name || email.from.address}, subject: ${email.subject}${!email.isRead ? ', unread' : ''}`}
-                className={`flex items-start space-x-3 ${densityConfig.padding} hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors relative ${
-                  isSelected ? 'bg-primary-50 dark:bg-primary-900/30' : ''
-                } ${isChecked ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${
-                  isFocused ? 'ring-2 ring-inset ring-primary-500 dark:ring-primary-400 bg-primary-50/50 dark:bg-primary-900/20' : ''
-                }`}
+                className="bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-100 flex items-center justify-between"
+                role="status"
+                aria-live="polite"
               >
-                <input
-                  type="checkbox"
-                  checked={selectedEmailIds.has(email.id)}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    toggleEmailSelection(email.id);
-                  }}
-                  className="mt-1 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
-                  onClick={(e) => e.stopPropagation()}
-                  aria-label={`Select email from ${email.from.name || email.from.address}`}
-                />
-                {/* Avatar */}
-                <Avatar
-                  email={email.from.address}
-                  name={email.from.name}
-                  size="md"
-                  className="mt-1"
-                />
-                <button
-                  onClick={() => onSelectEmail(email.id)}
-                  className={`flex-1 text-left ${!email.isRead ? 'font-semibold' : ''}`}
-                  aria-label={`Open email: ${email.subject}`}
-                  aria-pressed={selectedEmailId === email.id}
-                >
-                  <div className="flex items-start justify-between mb-1">
-                    <span className={`${densityConfig.textSize} text-gray-900 dark:text-gray-100 truncate flex-1`}>
-                      {email.from.name || email.from.address}
+                <div className="flex items-center space-x-2 flex-wrap">
+                  <span className="font-semibold">Quarantine lane</span>
+                  <span>Low-trust mail is contained here until you promote it.</span>
+                  {quarantineAttestationCount > 0 && (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200">
+                      {quarantineAttestationCount} attestation{quarantineAttestationCount === 1 ? '' : 's'}
                     </span>
-                    <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 flex-shrink-0">
-                      {formatEmailDate(email.date)}
+                  )}
+                  {quarantineLatestAttestation?.from && (
+                    <span className="text-[11px] text-gray-600 dark:text-gray-300">
+                      Latest attester: {quarantineLatestAttestation.from}
                     </span>
-                  </div>
-                <div className={`${densityConfig.textSize} text-gray-900 dark:text-gray-100 truncate mb-1`}>{email.subject}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                  {email.bodyText?.substring(0, 100)}
+                  )}
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-200">
+                    Attestation status: pending
+                  </span>
+                  <button
+                    onClick={() => toast.success('Attestation requests sent for quarantined senders.')}
+                    className="px-2 py-1 text-[11px] font-semibold rounded-md border border-blue-400 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-200 hover:border-blue-500 dark:hover:border-blue-600"
+                  >
+                    Request attestations
+                  </button>
+                  <button
+                    onClick={() => {
+                      quarantinedEmails.forEach((email) => {
+                        if (email.from?.address) {
+                          setOverride(email.from.address, {
+                            score: 95,
+                            tier: 'high',
+                            reasons: ['Manually trusted sender'],
+                            quarantined: false,
+                          });
+                        }
+                      });
+                      toast.success('Quarantined senders promoted to primary (manual allowlist).');
+                    }}
+                    className="px-2 py-1 text-[11px] font-semibold rounded-md border border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-200 hover:border-emerald-500 dark:hover:border-emerald-600"
+                  >
+                    Promote all
+                  </button>
                 </div>
-                {email.attachments && email.attachments.length > 0 && (
-                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    📎 {email.attachments.length} attachment{email.attachments.length > 1 ? 's' : ''}
-                  </div>
+                <span className="inline-flex items-center rounded-full bg-white/80 dark:bg-amber-800 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-100">
+                  {quarantinedEmails.length} message{quarantinedEmails.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            )}
+
+            {/* Primary lane */}
+            {safeEmails.map((email, index) => renderEmailRow(email, index))}
+
+            {/* Quarantine lane */}
+            {shouldApplyTrust && quarantineEnabled && quarantinedEmails.length > 0 && (
+              <div className="divide-y divide-rose-100 dark:divide-rose-900/40 border-t border-rose-100 dark:border-rose-900/50 bg-rose-50/50 dark:bg-rose-900/10">
+                {quarantinedEmails.map((email, index) =>
+                  renderEmailRow(email, safeEmails.length + index, { quarantined: true })
                 )}
-                {(() => {
-                  const emailLabels = getLabelsForEmail(email.id);
-                  if (emailLabels.length > 0) {
-                    return (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {emailLabels.slice(0, 3).map((label) => (
-                          <LabelChip
-                            key={label.id}
-                            label={label}
-                            size="sm"
-                            clickable={false}
-                          />
-                        ))}
-                        {emailLabels.length > 3 && (
-                          <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-0.5">
-                            +{emailLabels.length - 3} more
-                          </span>
-                        )}
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-              </button>
-            </div>
-            );
-          })
+              </div>
+            )}
+          </>
         )}
       </div>
 

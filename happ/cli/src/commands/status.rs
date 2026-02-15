@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::client::MycellixClient;
+use anyhow::{Context, Result};
 
 /// Show comprehensive system status and configuration
 pub async fn handle_status(client: &MycellixClient, detailed: bool) -> Result<()> {
@@ -39,7 +39,9 @@ pub async fn handle_status(client: &MycellixClient, detailed: bool) -> Result<()
     println!("💚 System Health");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let health_status = client.health_check().await
+    let health_status = client
+        .health_check()
+        .await
         .context("Failed to check system health")?;
 
     if health_status {
@@ -58,7 +60,9 @@ pub async fn handle_status(client: &MycellixClient, detailed: bool) -> Result<()
     println!("📊 Mailbox Statistics");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let stats = client.get_stats().await
+    let stats = client
+        .get_stats()
+        .await
         .context("Failed to get mailbox statistics")?;
 
     println!("   Total Messages:  {}", stats.total_messages);
@@ -80,11 +84,23 @@ pub async fn handle_status(client: &MycellixClient, detailed: bool) -> Result<()
 
         let config = client.get_config();
 
-        println!("   Default Tier:    Tier {} ({})",
+        println!(
+            "   Default Tier:    Tier {} ({})",
             config.preferences.default_tier,
-            tier_name(config.preferences.default_tier));
-        println!("   Auto Sync:       {}", if config.preferences.auto_sync { "Enabled" } else { "Disabled" });
-        println!("   Cache TTL:       {} seconds", config.preferences.cache_ttl);
+            tier_name(config.preferences.default_tier)
+        );
+        println!(
+            "   Auto Sync:       {}",
+            if config.preferences.auto_sync {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+        println!(
+            "   Cache TTL:       {} seconds",
+            config.preferences.cache_ttl
+        );
         println!("   Display Format:  {}", config.preferences.display_format);
         println!("   Timeout:         {} seconds", config.conductor.timeout);
 
@@ -92,8 +108,14 @@ pub async fn handle_status(client: &MycellixClient, detailed: bool) -> Result<()
             println!("   Email:           {}", email);
         }
 
-        println!("   Private Key:     {}", config.identity.private_key_path.display());
-        println!("   Public Key:      {}", config.identity.public_key_path.display());
+        println!(
+            "   Private Key:     {}",
+            config.identity.private_key_path.display()
+        );
+        println!(
+            "   Public Key:      {}",
+            config.identity.public_key_path.display()
+        );
     }
 
     println!();
@@ -112,7 +134,7 @@ fn truncate_key(key: &str, max_len: usize) -> String {
     if key.len() <= max_len {
         key.to_string()
     } else {
-        format!("{}...{}", &key[..max_len-10], &key[key.len()-7..])
+        format!("{}...{}", &key[..max_len - 10], &key[key.len() - 7..])
     }
 }
 
@@ -120,8 +142,7 @@ fn truncate_key(key: &str, max_len: usize) -> String {
 fn format_timestamp(ts: i64) -> String {
     use chrono::{DateTime, Utc};
 
-    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
-        .unwrap_or_else(|| Utc::now());
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now());
 
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }

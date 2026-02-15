@@ -2,11 +2,19 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { websocketService } from '@/services/websocket';
 import { useAuthStore } from '@/store/authStore';
+import { useTrustStore } from '@/store/trustStore';
+import type { Email } from '@/types';
 
 export const useWebSocket = () => {
   const [isConnected, setIsConnected] = useState(false);
   const token = useAuthStore((state) => state.token);
   const queryClient = useQueryClient();
+  const {
+    enabled: trustEnabled,
+    policy: trustPolicy,
+    notificationsEnabled,
+    evaluateTrust,
+  } = useTrustStore();
 
   useEffect(() => {
     if (!token) {
@@ -31,10 +39,35 @@ export const useWebSocket = () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['folders'] });
 
-      // Optional: Show notification
-      if ('Notification' in window && Notification.permission === 'granted') {
+      const email: Email | undefined = event.data?.email;
+
+      // Trust-aware notification gating
+      if (!notificationsEnabled) return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      if (!email) return;
+
+      let allowNotification = true;
+      if (trustEnabled) {
+        const trust = evaluateTrust(email as any);
+        const isLow = trust.tier === 'low' || trust.quarantined;
+        switch (trustPolicy) {
+          case 'strict':
+            allowNotification = !isLow;
+            break;
+          case 'balanced':
+            allowNotification = trust.tier !== 'low' && !trust.quarantined;
+            break;
+          case 'open':
+          default:
+            allowNotification = !trust.quarantined;
+            break;
+        }
+      }
+
+      if (allowNotification) {
+        const trustLabel = trustEnabled ? ` • Trust: ${evaluateTrust(email as any).tier}` : '';
         new Notification('New Email', {
-          body: event.data?.email?.subject || 'You have a new email',
+          body: `${email.subject || 'You have a new email'}${trustLabel}`,
           icon: '/vite.svg',
         });
       }

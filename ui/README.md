@@ -218,7 +218,18 @@ VITE_ENABLE_DRAFT_AUTOSAVE=true
 # Performance Settings
 VITE_QUERY_STALE_TIME=30000
 VITE_QUERY_CACHE_TIME=300000
+
+# Trust (optional, aligns with backend)
+# No frontend envs required for trust; backend handles TRUST_PROVIDER_URL and TTL.
+# Frontend trust cache/TTL can be adjusted in Settings > Trust.
 ```
+
+### Trust Provider (backend)
+
+- Set `TRUST_PROVIDER_URL` (and optional `TRUST_PROVIDER_API_KEY`) to point the backend at your MATL/Holochain trust summary endpoint returning `summary` with score/tier/reasons/pathLength/decayAt/attestations/quarantined/fetchedAt.
+- Adjust `TRUST_CACHE_TTL_MS` to match your desired refresh cadence; frontend TTL can be tuned in Settings > Trust.
+- Health: `GET /api/trust/health` shows provider configured status, cache size, and TTL.
+- Cache clear: `POST /api/trust/cache/clear` flushes backend cache; the Trust settings “Refresh summaries” button clears both frontend and backend caches.
 
 ## API Documentation
 

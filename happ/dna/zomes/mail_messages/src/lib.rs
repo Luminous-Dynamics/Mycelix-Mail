@@ -196,6 +196,58 @@ pub fn delete_message(message_hash: ActionHash) -> ExternResult<ActionHash> {
     delete_entry(message_hash)
 }
 
+/// Resolve a DID to a DidBinding (public wrapper for external callers)
+/// Returns the DidBinding entry containing both DID and AgentPubKey
+#[hdk_extern]
+pub fn resolve_did(did: String) -> ExternResult<Option<DidBinding>> {
+    let path = did_path(&did);
+    let path_hash = path.path_entry_hash()?;
+
+    let links =
+        get_links(GetLinksInputBuilder::try_new(path_hash, LinkTypes::DidBindingLink)?.build())?;
+
+    if let Some(link) = links.first() {
+        let hash_any_dht: AnyDhtHash =
+            ActionHash::from_raw_39(link.target.get_raw_39().to_vec()).into();
+        if let Some(record) = get(hash_any_dht, GetOptions::default())? {
+            let binding: DidBinding = record
+                .entry()
+                .to_app_option()
+                .map_err(|e| {
+                    wasm_error!(WasmErrorInner::Guest(format!(
+                        "Deserialization error: {:?}",
+                        e
+                    )))
+                })?
+                .ok_or(wasm_error!(WasmErrorInner::Guest(
+                    "Invalid DID binding entry".into()
+                )))?;
+
+            return Ok(Some(binding));
+        }
+    }
+
+    Ok(None)
+}
+
+/// List all registered DIDs (for admin/debug purposes)
+#[hdk_extern]
+pub fn list_registered_dids(_: ()) -> ExternResult<Vec<String>> {
+    let path = Path::from("did_index");
+    let children = path.children()?;
+
+    let dids: Vec<String> = children
+        .into_iter()
+        .filter_map(|link| {
+            // Extract DID from path component
+            let path_str = String::from_utf8(link.tag.into_inner()).ok()?;
+            Some(path_str)
+        })
+        .collect();
+
+    Ok(dids)
+}
+
 // === Helper Functions ===
 
 /// Helper function to get a message from a link

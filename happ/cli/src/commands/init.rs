@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, bail};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use anyhow::{bail, Context, Result};
 use blake2::{Blake2b512, Digest};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use std::fs;
 
-use crate::config::Config;
 use crate::client::MycellixClient;
+use crate::config::Config;
 
 /// Initialize Mycelix Mail
 ///
@@ -58,12 +58,14 @@ pub async fn handle_init(
     };
 
     // 4. Save keys to disk
-    println!("💾 Saving keys to {}...", config.identity.private_key_path.display());
+    println!(
+        "💾 Saving keys to {}...",
+        config.identity.private_key_path.display()
+    );
 
     // Ensure keys directory exists
     if let Some(parent) = config.identity.private_key_path.parent() {
-        fs::create_dir_all(parent)
-            .context("Failed to create keys directory")?;
+        fs::create_dir_all(parent).context("Failed to create keys directory")?;
     }
 
     // Save private key (32 bytes) - IMPORTANT: Keep this secure!
@@ -75,8 +77,14 @@ pub async fn handle_init(
         .context("Failed to write public key")?;
 
     println!("✅ Keys saved successfully");
-    println!("   Private key: {}", config.identity.private_key_path.display());
-    println!("   Public key: {}", config.identity.public_key_path.display());
+    println!(
+        "   Private key: {}",
+        config.identity.private_key_path.display()
+    );
+    println!(
+        "   Public key: {}",
+        config.identity.public_key_path.display()
+    );
 
     // 5. Create DID from public key
     println!();
@@ -96,9 +104,13 @@ pub async fn handle_init(
         did_registry_url,
         matl_bridge_url,
         config.clone(),
-    ).await?;
+    )
+    .await?;
 
-    match client.register_did(did.clone(), agent_pub_key.clone()).await {
+    match client
+        .register_did(did.clone(), agent_pub_key.clone())
+        .await
+    {
         Ok(_) => {
             println!("✅ DID registered successfully");
         }
@@ -129,7 +141,9 @@ pub async fn handle_init(
     println!();
     println!("Next steps:");
     println!("  • Run 'mycelix-mail did whoami' to verify your identity");
-    println!("  • Run 'mycelix-mail send <did> --subject \"Hello\" --body \"Test\"' to send a message");
+    println!(
+        "  • Run 'mycelix-mail send <did> --subject \"Hello\" --body \"Test\"' to send a message"
+    );
     println!("  • Run 'mycelix-mail inbox' to check for messages");
     println!();
 

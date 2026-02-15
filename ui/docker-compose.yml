@@ -6,7 +6,7 @@ services:
     container_name: mycelix-db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: mycelix_mail
     ports:
       - "5432:5432"
@@ -26,11 +26,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mycelix_mail
-      JWT_SECRET: your-production-secret-change-this
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/mycelix_mail
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       JWT_EXPIRES_IN: 7d
       CORS_ORIGIN: http://localhost:5173
-      ENCRYPTION_KEY: your-32-character-encryption-key-here-change
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}
     ports:
       - "3000:3000"
     depends_on:

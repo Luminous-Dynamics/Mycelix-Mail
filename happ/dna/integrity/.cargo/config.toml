@@ -1,6 +1,6 @@
 # Cargo configuration for WASM builds
 [target.wasm32-unknown-unknown]
-linker = "rust-lld"
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
 [build]
 target = "wasm32-unknown-unknown"
